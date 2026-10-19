@@ -117,6 +117,21 @@ def test_simple_whisper_chat(gen_ai_apps_dir):
     assert "Transcription completed" in stdout
     assert "Example completed successfully" in stdout
 
+def test_simple_whisper_chat_auto_language(gen_ai_apps_dir):
+    script_path = gen_ai_apps_dir / "simple_whisper_chat" / "simple_whisper_chat.py"
+    stdout, _ = run_app_subprocess(script_path, args=["--language", "auto"])
+    assert "Language: automatic detection" in stdout
+    assert "Transcription completed" in stdout
+    assert "Example completed successfully" in stdout
+
+def test_simple_whisper_chat_live_from_file(gen_ai_apps_dir):
+    # --live with --audio streams the file at real-time pace instead of opening a microphone
+    script_path = gen_ai_apps_dir / "simple_whisper_chat" / "simple_whisper_chat.py"
+    audio_path = gen_ai_apps_dir / "simple_whisper_chat" / "audio.wav"
+    stdout, _ = run_app_subprocess(script_path, args=["--live", "--audio", str(audio_path)])
+    assert "Streaming" in stdout
+    assert "Example completed successfully" in stdout
+
 @pytest.mark.skip(reason="Interactive test with GUI hangs in headless environment")
 def test_vlm_chat_interactive(gen_ai_apps_dir):
     script_path = gen_ai_apps_dir / "vlm_chat" / "vlm_chat.py"

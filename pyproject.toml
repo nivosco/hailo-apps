@@ -53,6 +53,7 @@ gen-ai = [
     "requests",
     "psutil",
     "soundfile",
+    "langdetect",  # Whisper automatic language detection (gen_ai_utils/whisper)
     "openwakeword",
     "geopy",
     "json-repair",

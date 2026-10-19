@@ -275,7 +275,7 @@ fi
 if [ "$RUN_GENAI" = true ]; then
     echo ""
     echo "--- Running GenAI Tests ---"
-    if python -m pytest "${TESTS_DIR}/test_gen_ai.py" "${TESTS_DIR}/voice_assistant_unit_tests.py" -v --log-cli-level=INFO; then
+    if python -m pytest "${TESTS_DIR}/test_gen_ai.py" "${TESTS_DIR}/voice_assistant_unit_tests.py" "${TESTS_DIR}/test_hailo_whisper.py" -v --log-cli-level=INFO; then
         echo "✓ GenAI tests passed"
     else
         echo "✗ GenAI tests failed"

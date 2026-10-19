@@ -14,6 +14,7 @@ The framework consists of six test categories:
 | `test_runner.py` | Pipeline functional tests | `@pytest.mark.pipeline`, `@pytest.mark.requires_device` |
 | `test_standalone_runner.py` | Standalone app smoke tests | `@pytest.mark.standalone`, `@pytest.mark.requires_device` |
 | `test_gen_ai.py` | GenAI app integration tests | `@pytest.mark.genai` |
+| `test_hailo_whisper.py` | Whisper long-form/live transcription logic (no device needed) | `@pytest.mark.genai` |
 
 ## Table of Contents
 
@@ -194,6 +195,14 @@ Integration tests for generative-AI applications: LLM text generation, VLM image
 **Run:**
 ```bash
 pytest tests/test_gen_ai.py -v
+```
+
+`test_hailo_whisper.py` covers the `HailoWhisper` logic in `gen_ai_utils/whisper/` (cutting at
+pauses, token-budget splits, language lock, audio loading) with a stand-in for the device, so it
+runs anywhere:
+
+```bash
+pytest tests/test_hailo_whisper.py -v
 ```
 
 ## Running Tests
