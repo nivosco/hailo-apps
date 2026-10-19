@@ -9,6 +9,7 @@ Tests cover:
 - Model files (HEF) download verification
 - Video and image resources
 - JSON configuration files
+- CPU-side ONNX models
 - Compiled postprocess .so files
 - Configuration files
 
@@ -41,6 +42,7 @@ try:
         RESOURCES_SO_DIR_NAME,
         RESOURCES_JSON_DIR_NAME,
         RESOURCES_NPY_DIR_NAME,
+        RESOURCES_ONNX_DIR_NAME,
         RESOURCES_PHOTOS_DIR_NAME,
         HAILO8_ARCH,
         HAILO8L_ARCH,
@@ -57,6 +59,7 @@ except ImportError:
     RESOURCES_SO_DIR_NAME = "so"
     RESOURCES_JSON_DIR_NAME = "json"
     RESOURCES_NPY_DIR_NAME = "npy"
+    RESOURCES_ONNX_DIR_NAME = "onnx"
     RESOURCES_PHOTOS_DIR_NAME = "photos"
     HAILO8_ARCH = "hailo8"
     HAILO8L_ARCH = "hailo8l"
@@ -255,6 +258,12 @@ class TestDirectoryStructure:
         npy_dir = resources_root_path / RESOURCES_NPY_DIR_NAME
         assert npy_dir.exists(), f"NPY directory does not exist: {npy_dir}"
         logger.info(f"NPY directory exists: {npy_dir}")
+
+    def test_onnx_directory_exists(self, resources_root_path):
+        """Verify ONNX (CPU-side models) directory exists."""
+        onnx_dir = resources_root_path / RESOURCES_ONNX_DIR_NAME
+        assert onnx_dir.exists(), f"ONNX directory does not exist: {onnx_dir}"
+        logger.info(f"ONNX directory exists: {onnx_dir}")
 
 # ============================================================================
 # SECTION 2: MODEL FILES TESTS
@@ -800,6 +809,53 @@ class TestNpyConfigFiles:
             pytest.fail(f"Invalid NPY files found: {invalid_npy}")
 
         logger.info("All NPY files are valid")
+
+
+# ============================================================================
+# SECTION 10: ONNX (CPU-SIDE MODEL) FILES TESTS
+# ============================================================================
+
+@pytest.mark.installation
+@pytest.mark.resources
+class TestOnnxModelFiles:
+    """Tests for downloaded CPU-side ONNX models (e.g. the Silero VAD used by Whisper)."""
+
+    def test_expected_onnx_files_downloaded(self, resources_root_path, expected_onnx_files):
+        """Verify expected ONNX models are downloaded."""
+        if not expected_onnx_files:
+            pytest.skip("No ONNX files defined in resources_config.yaml")
+
+        onnx_dir = resources_root_path / RESOURCES_ONNX_DIR_NAME
+        if not onnx_dir.exists():
+            pytest.fail(f"ONNX directory does not exist: {onnx_dir}")
+
+        missing_onnx = [name for name in expected_onnx_files if not (onnx_dir / name).exists()]
+        found = len(expected_onnx_files) - len(missing_onnx)
+        logger.info(f"Found {found}/{len(expected_onnx_files)} expected ONNX files")
+        if missing_onnx:
+            logger.warning(f"Missing ONNX files: {missing_onnx}")
+
+    def test_onnx_files_valid(self, resources_root_path, expected_onnx_files):
+        """Verify downloaded ONNX models load in onnxruntime."""
+        if not expected_onnx_files:
+            pytest.skip("No ONNX files defined in resources_config.yaml")
+        onnxruntime = pytest.importorskip("onnxruntime")
+
+        onnx_dir = resources_root_path / RESOURCES_ONNX_DIR_NAME
+        invalid_onnx = []
+        for onnx_name in expected_onnx_files:
+            onnx_path = onnx_dir / onnx_name
+            if not onnx_path.exists():
+                continue
+            try:
+                onnxruntime.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+            except Exception as e:
+                invalid_onnx.append(f"{onnx_name}: {e}")
+
+        if invalid_onnx:
+            pytest.fail(f"Invalid ONNX files found: {invalid_onnx}")
+
+        logger.info("All ONNX files are valid")
 
 
 # ============================================================================

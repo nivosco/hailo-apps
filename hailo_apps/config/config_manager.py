@@ -591,6 +591,20 @@ def get_npy_files() -> list[str]:
     return npy_files
 
 
+def get_onnx_files() -> list[str]:
+    """Get list of CPU-side ONNX model filenames from the shared onnx section.
+
+    Returns:
+        List of ONNX filename strings
+    """
+    config = get_resources_config()
+    return [
+        entry["name"]
+        for entry in config.get("onnx") or []
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+
+
 def get_json_files(app_name: str = None) -> list[str]:
     """Get JSON config filenames from the shared json section.
     

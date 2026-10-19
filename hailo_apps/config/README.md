@@ -108,6 +108,9 @@ images = config_manager.get_images()    # ["dog_bicycle.jpg", ...]
 # Get all shared JSON files
 json_files = config_manager.get_json_files()  # ["hailo_4_classes.json", "scrfd.json", ...]
 
+# Get all shared CPU-side ONNX models (installed into <resources>/onnx/)
+onnx_files = config_manager.get_onnx_files()  # ["silero_vad.onnx"]
+
 # Check if app is Gen-AI
 is_gen_ai = config_manager.is_gen_ai_app("vlm_chat")  # True
 ```

@@ -303,3 +303,14 @@ def expected_npy_files() -> List[str]:
     if config_manager is None:
         return []
     return config_manager.get_npy_files()
+
+
+@pytest.fixture(scope="session")
+def expected_onnx_files() -> List[str]:
+    """Fixture providing expected CPU-side ONNX models from the shared onnx section.
+
+    Returns list of ONNX filename strings.
+    """
+    if config_manager is None:
+        return []
+    return config_manager.get_onnx_files()

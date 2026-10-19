@@ -49,6 +49,7 @@ hef_path = resolve_hef_path(
 ├── images/             # Test/demo images
 ├── json/               # Label files, configs
 ├── npy/                # Numpy data files
+├── onnx/               # CPU-side ONNX models (e.g. Silero VAD)
 └── so/                 # Compiled postprocess libraries
 ```
 

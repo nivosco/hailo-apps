@@ -113,6 +113,7 @@ resources:
     - "images"
     - "json"
     - "npy"
+    - "onnx"
     - "so"
     - "packages"
 

@@ -17,6 +17,7 @@
 #
 #   json: [list of JSON config file entries - shared across all apps]
 #   npy: [list of npy file entries - shared across all apps]
+#   onnx: [list of CPU-side ONNX model entries - shared across all apps]
 #   videos: [list of video entries with name field]
 #   images: [list of image entries with name and url]
 
@@ -223,6 +224,18 @@ json:
     source: s3
     tag:
       - clip
+
+# Shared CPU-side ONNX models (run with onnxruntime, not on the Hailo device)
+# Downloaded with a group that is in their tags, and by the default download with --include-gen-ai
+# Tags use app names only (no _p/_s suffixes)
+onnx:
+  # Silero VAD v6.2.3 (MIT license): voice activity detection for Whisper (gen_ai_utils/whisper)
+  - name: silero_vad.onnx
+    url: https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx
+    tag:
+      - whisper_chat
+      - voice_assistant
+      - agent
 
 # Shared npy files for all apps
 # Tags use app names only (no _p/_s suffixes)

@@ -158,6 +158,7 @@ RESOURCES_SO_DIR_NAME = "so"
 RESOURCES_PHOTOS_DIR_NAME = "images"  # Changed from "photos" to match actual directory name
 RESOURCES_JSON_DIR_NAME = "json"
 RESOURCES_NPY_DIR_NAME = "npy"
+RESOURCES_ONNX_DIR_NAME = "onnx"  # CPU-side ONNX models shared across apps
 
 # Depth pipeline defaults
 DEPTH_APP_TITLE = "Hailo Depth App"

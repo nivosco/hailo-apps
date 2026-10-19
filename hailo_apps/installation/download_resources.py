@@ -48,6 +48,7 @@ from hailo_apps.python.core.common.defines import (
     MODEL_ZOO_VERSION_KEY,
     RESOURCES_JSON_DIR_NAME,
     RESOURCES_NPY_DIR_NAME,
+    RESOURCES_ONNX_DIR_NAME,
     RESOURCES_MODELS_DIR_NAME,
     RESOURCES_ROOT_PATH_DEFAULT,
     RESOURCES_VIDEOS_DIR_NAME,
@@ -806,6 +807,27 @@ class ResourceDownloader:
             name=npy_name
         )
         self._tasks.add(task)
+
+    def _add_onnx_file_task(self, onnx_entry):
+        """Add a download task for an entry of the shared onnx section (CPU-side models)."""
+        if not isinstance(onnx_entry, dict) or not onnx_entry.get("name"):
+            hailo_logger.warning(f"ONNX entry missing name: {onnx_entry}")
+            return
+        onnx_name = onnx_entry["name"]
+        url = onnx_entry.get("url")
+        if not url and onnx_entry.get("source") == "s3":
+            url = f"{S3_RESOURCES_BASE_URL}/onnx/{onnx_name}"
+        if not url:
+            hailo_logger.warning(f"ONNX '{onnx_name}' missing URL and source is not 's3'")
+            return
+        task = DownloadTask(
+            url=url,
+            dest_path=self.resource_root / RESOURCES_ONNX_DIR_NAME / onnx_name,
+            resource_type="onnx",
+            name=onnx_name,
+        )
+        self._tasks.add(task)
+
     # -------------------------------------------------------------------------
     # High-Level Collection Methods
     # -------------------------------------------------------------------------
@@ -875,6 +897,17 @@ class ResourceDownloader:
         if "npy" in self.config:
             for npy_entry in self.config["npy"]:
                 self._add_npy_task(npy_entry)
+
+    def collect_all_onnx_files(self):
+        """Collect all download tasks from the top-level onnx section."""
+        for onnx_entry in self.config.get("onnx") or []:
+            self._add_onnx_file_task(onnx_entry)
+
+    def collect_onnx_by_tag(self, tag: str):
+        """Collect download tasks of the top-level onnx section filtered by tag."""
+        for onnx_entry in self.config.get("onnx") or []:
+            if isinstance(onnx_entry, dict) and tag in onnx_entry.get("tag", []):
+                self._add_onnx_file_task(onnx_entry)
 
     def collect_npy_by_tag(self, tag: str):
         """Collect NPY download tasks filtered by tag."""
@@ -990,7 +1023,11 @@ class ResourceDownloader:
         )
 
     def collect_specific_onnx_for_app(self, app_name: str, onnx_name: str):
-        """Collect a specific ONNX sidecar artifact for a specific app."""
+        """Collect a specific ONNX artifact: a shared CPU-side model, else a HEF sidecar."""
+        for onnx_entry in self.config.get("onnx") or []:
+            if isinstance(onnx_entry, dict) and onnx_entry.get("name") == onnx_name:
+                self._add_onnx_file_task(onnx_entry)
+                return
         self._add_onnx_task(onnx_name)
 
     def collect_specific_model(self, model_name: str):
@@ -1068,6 +1105,7 @@ class ResourceDownloader:
         self.collect_all_images()
         self.collect_all_json_files()
         self.collect_all_npy_files()
+        self.collect_onnx_by_tag(group_name)
     
     def _is_gen_ai_app(self, app_config: dict) -> bool:
         """Check if an app is a gen-ai app."""
@@ -1476,6 +1514,8 @@ def download_resources(
     downloader.collect_all_images()
     downloader.collect_all_json_files()
     downloader.collect_all_npy_files()
+    if include_gen_ai:
+        downloader.collect_all_onnx_files()
 
     # Collect models according to the selected bootstrap mode
     if all_models:

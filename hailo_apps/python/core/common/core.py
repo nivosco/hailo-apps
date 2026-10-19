@@ -20,6 +20,7 @@ from .defines import (
     RESOURCES_JSON_DIR_NAME,
     RESOURCES_MODELS_DIR_NAME,
     RESOURCES_NPY_DIR_NAME,
+    RESOURCES_ONNX_DIR_NAME,
     # for get_resource_path
     RESOURCES_PHOTOS_DIR_NAME,
     RESOURCES_ROOT_PATH_DEFAULT,
@@ -133,6 +134,8 @@ def get_resource_path(
         return root / RESOURCES_JSON_DIR_NAME / model
     if resource_type == RESOURCES_NPY_DIR_NAME and model:
         return root / RESOURCES_NPY_DIR_NAME / model
+    if resource_type == RESOURCES_ONNX_DIR_NAME and model:
+        return root / RESOURCES_ONNX_DIR_NAME / model
     if resource_type == DEFAULT_LOCAL_RESOURCES_PATH and model:
         return root / DEFAULT_LOCAL_RESOURCES_PATH / model
 
