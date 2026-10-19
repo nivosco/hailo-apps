@@ -249,9 +249,7 @@ class AgentApp:
         """
         # Import voice components
         try:
-            from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import (
-                SpeechToTextProcessor,
-            )
+            from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper
             from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.text_to_speech import (
                 TextToSpeechProcessor,
                 PiperModelNotFoundError,
@@ -262,7 +260,7 @@ class AgentApp:
 
         # Speech-to-Text
         try:
-            self.s2t = SpeechToTextProcessor(self.vdevice, hef_path=whisper_hef_path)
+            self.s2t = HailoWhisper(self.vdevice, hef_path=whisper_hef_path)
         except Exception as e:
             logger.error("Failed to initialize Speech-to-Text: %s", e)
             self.llm.release()
@@ -484,7 +482,7 @@ class AgentApp:
             return
 
         try:
-            user_text = self.s2t.transcribe(audio)
+            user_text = self.s2t.transcribe(audio).text
         except Exception as e:
             logger.error("Transcription failed: %s", e)
             return
@@ -790,6 +788,12 @@ class AgentApp:
         if self.tts:
             try:
                 self.tts.stop()
+            except Exception:
+                pass
+
+        if self.s2t:
+            try:
+                self.s2t.release()
             except Exception:
                 pass
 

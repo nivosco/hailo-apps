@@ -8,7 +8,6 @@ from .audio_diagnostics import AudioDiagnostics
 from .audio_player import AudioPlayer
 from .audio_recorder import AudioRecorder
 from .interaction import VoiceInteractionManager
-from .speech_to_text import SpeechToTextProcessor
 
 # TextToSpeechProcessor is NOT imported here to avoid requiring piper for
 # STT-only apps. Import directly when needed:
@@ -19,5 +18,4 @@ __all__ = [
     "AudioPlayer",
     "AudioRecorder",
     "VoiceInteractionManager",
-    "SpeechToTextProcessor",
 ]

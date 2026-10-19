@@ -34,8 +34,8 @@ Study these:
   - `whisper_pipeline.py` — `WhisperPipeline` class: encoder+decoder inference via `InferModel`
   - `audio_utils.py` — Audio recording, mel spectrogram, file I/O
   - `postprocessing.py` — Repetition penalty and token decoding
+- `hailo_apps/python/gen_ai_apps/gen_ai_utils/whisper/` — `HailoWhisper` (Whisper via genai API, Hailo-10H): `transcribe(audio).text`, `live()` for streams
 - `hailo_apps/python/gen_ai_apps/gen_ai_utils/voice_processing/` — Voice utilities (Hailo-10H):
-  - `speech_to_text.py` — `SpeechToTextProcessor` (Whisper via genai API)
   - `text_to_speech.py` — `TextToSpeechProcessor` (Piper on CPU)
   - `audio_recorder.py` — `AudioRecorder` (microphone capture)
   - `vad.py` — Voice Activity Detection
@@ -80,7 +80,7 @@ from hailo_apps.python.core.common.defines import (
 
 logger = get_logger(__name__)
 
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import SpeechToTextProcessor
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.text_to_speech import TextToSpeechProcessor
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.interaction import VoiceInteractionManager
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.vad import add_vad_args
@@ -111,7 +111,7 @@ def main():
     # STT (Whisper on Hailo)
     whisper_hef = resolve_hef_path(None, "whisper", arch=HAILO10H_ARCH)
     with redirect_stderr(StringIO()):  # Suppress ALSA noise
-        stt = SpeechToTextProcessor(vdevice, str(whisper_hef))
+        stt = HailoWhisper(vdevice, str(whisper_hef))
 
     # LLM (on Hailo)
     llm_hef = resolve_hef_path(args.hef_path, APP_NAME, arch=HAILO10H_ARCH)
@@ -248,7 +248,7 @@ if __name__ == "__main__":
 
 **Key differences from H10 pattern**:
 - Uses `resolve_hef_paths()` (plural) — returns dict with `encoder` and `decoder` keys
-- Uses `WhisperPipeline` with `InferModel` API — NOT `SpeechToTextProcessor`
+- Uses `WhisperPipeline` with `InferModel` API — NOT `HailoWhisper`
 - `add_embed` flag: `True` for H8/8L (host-side Add operator), `False` for H10
 - No LLM/VLM on device — inference is CPU or external service
 - Dependencies: `pip install -e ".[speech-rec]"` (torch, transformers, sounddevice, scipy)
@@ -262,7 +262,7 @@ python3 .hailo/scripts/validate_app.py hailo_apps/python/standalone_apps/my_spee
 ## Critical Conventions
 
 1. **STT on Hailo, TTS on CPU**: Never reverse this — Whisper needs the accelerator, Piper is CPU-only
-2. **Two STT APIs**: `SpeechToTextProcessor` (genai) for H10, `WhisperPipeline` (InferModel) for H8/8L/10H
+2. **Two STT APIs**: `HailoWhisper` (genai) for H10, `WhisperPipeline` (InferModel) for H8/8L/10H
 3. **Architecture detection**: Use `detect_hailo_arch()` or `--arch` flag — never hardcode
 4. **ALSA noise**: Wrap audio init with `redirect_stderr(StringIO())`
 5. **Abort event**: `threading.Event()` for interrupting generation and speech

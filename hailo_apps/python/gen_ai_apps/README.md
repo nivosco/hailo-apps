@@ -140,10 +140,11 @@ Provides helpers for building LLM agents:
 Components for building voice-enabled applications:
 - **VoiceInteractionManager**: Manages the interaction loop, recording, and UI
 - **AudioRecorder**: Handles microphone recording with auto-detection
-- **SpeechToTextProcessor**: Wraps Hailo's Speech2Text API (Whisper)
 - **TextToSpeechProcessor**: Handles speech synthesis using Piper TTS
 - **AudioPlayer**: Cross-platform audio playback
 - **AudioDiagnostics**: Tools for device enumeration and troubleshooting
+
+Speech-to-text is `HailoWhisper` in `gen_ai_utils/whisper/` (any audio length and language).
 
 **Documentation:** See [gen_ai_utils/README.md](gen_ai_utils/README.md) for detailed API documentation and usage examples.
 

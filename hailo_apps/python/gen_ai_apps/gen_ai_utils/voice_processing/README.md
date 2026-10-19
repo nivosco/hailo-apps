@@ -47,7 +47,6 @@ sudo apt-get install portaudio19-dev
 
 - **`VoiceInteractionManager`**: Manages the interaction loop, recording, user input, and callbacks. Provides a high-level API for building voice-enabled applications.
 - **`AudioRecorder`**: Handles microphone recording using `sounddevice` with automatic device detection and preference support. Supports resampling and debug audio saving.
-- **`SpeechToTextProcessor`**: Wraps Hailo's Speech2Text API (Whisper model) for audio transcription with language support.
 - **`TextToSpeechProcessor`**: Handles speech synthesis using Piper TTS with streaming playback, interruption support, and text cleaning for optimal quality.
 - **`AudioPlayer`**: Cross-platform audio playback using `sounddevice` with persistent streaming (supporting gapless playback) and automatic device selection.
 - **`AudioDiagnostics`**: Tools for device enumeration, testing, troubleshooting, and preference management. Provides platform-specific guidance.
@@ -56,7 +55,6 @@ sudo apt-get install portaudio19-dev
 
 - `interaction.py` - VoiceInteractionManager class for managing voice interactions
 - `audio_recorder.py` - AudioRecorder class for microphone recording
-- `speech_to_text.py` - SpeechToTextProcessor class for audio transcription
 - `text_to_speech.py` - TextToSpeechProcessor class for speech synthesis
 - `audio_player.py` - AudioPlayer class for audio playback
 - `audio_diagnostics.py` - AudioDiagnostics class and troubleshooting utilities
@@ -198,27 +196,21 @@ When `vad_enabled=True`, the application listens continuously.
 
 #### Speech-to-Text
 
+Speech-to-text lives in [`gen_ai_utils/whisper/`](../whisper/): `HailoWhisper` transcribes audio of
+any length and language on Hailo-10H.
+
 ```python
 from hailo_platform import VDevice
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import SpeechToTextProcessor
-import numpy as np
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper
 
 vdevice = VDevice()
-s2t = SpeechToTextProcessor(vdevice)  # Uses default Whisper model
+whisper = HailoWhisper(vdevice)  # default Whisper model; or HailoWhisper(vdevice, "/path/to/model.hef")
 
-# Or specify a custom HEF path
-# s2t = SpeechToTextProcessor(vdevice, hef_path="/path/to/model.hef")
-
-# Transcribe audio (numpy array: float32, mono, 16kHz)
-text = s2t.transcribe(audio_data, language="en", timeout_ms=15000)
+# audio_data: float32, mono, 16 kHz, any length; language="auto" detects it
+text = whisper.transcribe(audio_data, language="en").text
 print(f"Transcribed: {text}")
+whisper.release()  # before vdevice.release()
 ```
-
-The `SpeechToTextProcessor`:
-- Automatically resolves the default Whisper model from the whisper_chat app configuration
-- Returns empty string if no speech is detected
-- Supports language specification (defaults to "en")
-- Includes timeout protection (default 15 seconds)
 
 #### Text-to-Speech
 
@@ -356,7 +348,6 @@ If you see an error about missing Piper TTS model files:
 For detailed API documentation, see the docstrings in each module:
 - `interaction.py` - VoiceInteractionManager class
 - `audio_recorder.py` - AudioRecorder class
-- `speech_to_text.py` - SpeechToTextProcessor class
 - `text_to_speech.py` - TextToSpeechProcessor class
 - `audio_player.py` - AudioPlayer class
 - `audio_diagnostics.py` - AudioDiagnostics class and utility functions

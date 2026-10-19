@@ -20,7 +20,7 @@ from hailo_apps.python.core.common.core import resolve_hef_path
 from hailo_apps.python.core.common.hailo_logger import add_logging_cli_args, init_logging, level_from_args
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.interaction import VoiceInteractionManager
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.vad import add_vad_args
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import SpeechToTextProcessor
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.text_to_speech import (
     TextToSpeechProcessor,
     PiperModelNotFoundError,
@@ -49,7 +49,7 @@ class VoiceAssistantApp:
             self.vdevice = VDevice(params)
 
             # 2. Speech to Text
-            self.s2t = SpeechToTextProcessor(self.vdevice)
+            self.s2t = HailoWhisper(self.vdevice)
 
             # 3. LLM
             # USER CONFIGURATION: You can change the LLM model here.
@@ -95,7 +95,7 @@ class VoiceAssistantApp:
         self.abort_event.clear()
 
         # 1. Transcribe
-        user_text = self.s2t.transcribe(audio)
+        user_text = self.s2t.transcribe(audio).text
         if not user_text:
             print("No speech detected.")
             return
@@ -165,6 +165,11 @@ class VoiceAssistantApp:
     def close(self):
         if self.tts:
             self.tts.stop()
+
+        try:
+            self.s2t.release()
+        except Exception:
+            pass
 
         # Clean up LLM resources
         try:

@@ -17,7 +17,7 @@ Provides components for building voice-enabled applications.
 
 - **`VoiceInteractionManager`**: Manages the interaction loop, recording, and UI.
 - **`AudioRecorder`**: Handles microphone recording using sounddevice.
-- **`SpeechToTextProcessor`**: Wraps Hailo's Speech2Text API (Whisper).
+- **`whisper/`**: `HailoWhisper`, the entry point for Whisper on Hailo-10H (recordings and live audio, any length and language).
 - **`TextToSpeechProcessor`**: Handles speech synthesis using Piper TTS.
 
 #### Usage Example

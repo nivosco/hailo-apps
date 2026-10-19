@@ -23,11 +23,11 @@ You are an expert Hailo voice application builder. You create voice apps for **a
 | Target Hardware | Capabilities | STT API | LLM/VLM | TTS |
 |---|---|---|---|---|
 | **Hailo-8 / 8L** | Speech-to-text only | `InferModel` (encoder+decoder HEFs) | N/A (CPU-only or external) | Piper (CPU) |
-| **Hailo-10H** | Full voice assistant | `hailo_platform.genai.Speech2Text` or `SpeechToTextProcessor` | `LLM` / `VLM` on device | Piper (CPU) |
+| **Hailo-10H** | Full voice assistant | `HailoWhisper` (over `hailo_platform.genai.Speech2Text`) | `LLM` / `VLM` on device | Piper (CPU) |
 
 **Two STT approaches**:
 - **InferModel pipeline** (`WhisperPipeline`) — works on ALL Hailo devices (8/8L/10H). Uses separate encoder + decoder HEFs with `VDevice` + `InferModel`. Reference: `standalone_apps/speech_recognition/`
-- **genai.Speech2Text** (via `SpeechToTextProcessor`) — Hailo-10H only. Higher-level API, simpler code. Reference: `gen_ai_apps/voice_assistant/`
+- **`HailoWhisper`** (`gen_ai_utils/whisper/`, over `genai.Speech2Text`) — Hailo-10H only. Any audio length and language; cuts at pauses so no speech is lost to the 10 s window. Reference: `gen_ai_apps/voice_assistant/`
 
 ## Your Workflow
 
@@ -134,7 +134,7 @@ Only scan real code when:
 5. **Create `<app_name>.py`** — Main app:
    - **For Hailo-10H** (voice + LLM/VLM):
      - VDevice creation with `SHARED_VDEVICE_GROUP_ID`
-     - `SpeechToTextProcessor` (Whisper via genai API) initialization
+     - `HailoWhisper` (Whisper via genai API) initialization; `transcribe(audio).text`
      - LLM or VLM initialization
      - `TextToSpeechProcessor` (Piper on CPU) initialization
      - `VoiceInteractionManager` for high-level voice loop
@@ -178,7 +178,7 @@ Present completed app with files created, how to run, and audio setup notes.
 
 Follow all conventions from `coding-standards.md` (auto-loaded). Key points:
 1. **STT on Hailo, TTS on CPU**: Whisper runs on accelerator, Piper runs on CPU
-2. **Two STT APIs**: Use `SpeechToTextProcessor` (genai) on H10, `WhisperPipeline` (InferModel) on H8/8L
+2. **Two STT APIs**: Use `HailoWhisper` (genai) on H10, `WhisperPipeline` (InferModel) on H8/8L
 3. **Architecture detection**: Use `detect_hailo_arch()` or `--arch` flag — never assume hardware
 4. **ALSA noise**: Wrap audio init with `redirect_stderr(StringIO())`
 5. **VAD args**: Use `add_vad_args(parser)` for `--vad`, `--vad-aggressiveness`, `--vad-energy-threshold`
@@ -205,7 +205,7 @@ def main():
 
     # STT (on Hailo-10H via genai API)
     whisper_hef = resolve_hef_path(None, WHISPER_APP, arch=HAILO10H_ARCH)
-    stt = SpeechToTextProcessor(vdevice, str(whisper_hef))
+    stt = HailoWhisper(vdevice, str(whisper_hef))
 
     # LLM (on Hailo-10H)
     llm_hef = resolve_hef_path(args.hef_path, APP_NAME, arch=HAILO10H_ARCH)

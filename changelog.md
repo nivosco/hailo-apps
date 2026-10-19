@@ -1,3 +1,16 @@
+## Unreleased
+
+### Added
+- `HailoWhisper` (`gen_ai_utils/whisper/`): one entry point for Whisper on Hailo-10H that transcribes recordings and live audio of any length and language; it cuts audio at pauses with Silero VAD, re-splits phrases that run out of tokens, and keeps the automatically detected language per transmission
+- Simple Whisper Chat: `--language` (including `auto`) and `--live` microphone transcription
+- Shared `onnx` section in `resources_config.yaml` for CPU-side ONNX models, installed into `<resources>/onnx/` (first entry: Silero VAD)
+
+### Improved
+- Voice Assistant and Agent Tools Example transcribe through `HailoWhisper`, so long or dense speech is no longer dropped at the 10-second window
+
+### Removed
+- `SpeechToTextProcessor` (`voice_processing/speech_to_text.py`); use `HailoWhisper(vdevice).transcribe(audio).text`
+
 ## 26.10.0
 
 ### Fixed

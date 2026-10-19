@@ -1,7 +1,6 @@
 # Toolset: Gen AI Utilities Reference
 
 > API reference for shared gen AI utilities: LLM tools, voice processing, and agent support.
-> All signatures below were verified directly against the source files — copy them exactly.
 
 ## LLM Utilities (`gen_ai_utils/llm_utils/`)
 
@@ -103,16 +102,35 @@ ch = TerminalUI.get_char()  # blocking single-character read (handles Windows/PO
 
 ---
 
-## Voice Processing (`gen_ai_utils/voice_processing/`)
+## Whisper speech-to-text (`gen_ai_utils/whisper/`)
 
-### speech_to_text.py
+The entry point for Whisper on Hailo-10H: recordings and live audio, any length, any language.
+Prefer it to calling `hailo_platform.genai.Speech2Text` directly, which drops speech on long or
+dense audio (10 s windows with a fixed token budget per window).
+
 ```python
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import SpeechToTextProcessor
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper, load_audio
 
-stt = SpeechToTextProcessor(vdevice, hef_path)  # hef_path=None auto-resolves the Whisper-Base HEF
-text = stt.transcribe(audio_numpy_array, language="en", timeout_ms=15000)
-# No release()/close() method — SpeechToTextProcessor wraps hailo_platform.genai.Speech2Text directly.
+whisper = HailoWhisper(vdevice, hef_path=None)  # None auto-resolves the whisper_chat HEF
+result = whisper.transcribe(load_audio("speech.wav"), language="auto")  # or "en", "fr", ...
+result.text, result.language, result.phrases
+
+live = whisper.live(language="en")  # feed mono float32 16 kHz chunks of any size
+phrases = live.feed(chunk)          # list[Phrase]: text, language, start_s, end_s
+phrases = live.flush()              # at the end of the stream
+whisper.release()                   # before vdevice.release()
 ```
+
+Also exported: `load_audio(path)`, `normalize(samples, channels)`, `resample(audio, rate)`,
+`StreamResampler(rate)` (for microphones that do not open at 16 kHz), `SAMPLE_RATE`,
+`LANGUAGES` (code -> name), `language_name(code)`, `WhisperConfig`, `SegmenterConfig`.
+Needs `onnxruntime` (Silero VAD; the model is installed by `hailo-download-resources --group
+whisper_chat` into `<resources>/onnx/`, or fetched the same way on first use) and `langdetect`
+for `language="auto"`.
+
+---
+
+## Voice Processing (`gen_ai_utils/voice_processing/`)
 
 ### text_to_speech.py
 ```python

@@ -145,7 +145,7 @@ picam2.start()
 ## Voice Integration
 
 ```python
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.speech_to_text import SpeechToText
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import HailoWhisper
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.text_to_speech import TextToSpeech
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.audio_recorder import AudioRecorder
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.vad import VAD
