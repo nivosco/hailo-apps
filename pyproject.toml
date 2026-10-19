@@ -73,6 +73,10 @@ speech-rec = [
     "torch==2.6.0",
 ]
 
+agent-server = [
+    "mcp>=2.3,<3",
+]
+
 [project.urls]
 Homepage = "https://github.com/hailo-ai/hailo-apps"
 Repository = "https://github.com/hailo-ai/hailo-apps"
@@ -96,6 +100,7 @@ hailo-reid =                "hailo_apps.python.pipeline_apps.reid_multisource.re
 hailo-clip =                "hailo_apps.python.pipeline_apps.clip.clip:main"
 hailo-ocr  =                "hailo_apps.python.pipeline_apps.paddle_ocr.paddle_ocr:main"
 hailo-audio-troubleshoot =  "hailo_apps.python.gen_ai_apps.gen_ai_utils.voice_processing.audio_troubleshoot:main"
+hailo-agent-server =        "hailo_apps.python.agent_server.server:main"
 
 [tool.setuptools]
 include-package-data = true
