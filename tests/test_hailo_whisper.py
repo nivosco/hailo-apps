@@ -40,7 +40,11 @@ from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import (
     resample,
 )
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper.hailo_whisper import DEFAULT_TOKEN_BUDGET
-from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper.segmenter import DEFAULT_WINDOW_S
+from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper.segmenter import (
+    DEFAULT_WINDOW_S,
+    Segmenter,
+    SegmenterConfig,
+)
 from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper.vad import FRAME_SAMPLES
 
 pytestmark = pytest.mark.genai
@@ -89,10 +93,14 @@ class EnergyVad:
     """Stands in for Silero VAD: a 32 ms frame is speech when it is loud."""
 
     def __init__(self, *_):
+        self.state_resets = 0
         self.reset()
 
     def reset(self):
         self._pending = np.zeros(0, np.float32)
+
+    def reset_state(self):
+        self.state_resets += 1
 
     def feed(self, audio):
         self._pending = np.concatenate([self._pending, np.asarray(audio, np.float32)])
@@ -312,6 +320,29 @@ def test_a_session_can_continue_after_flush():
     assert second[0].end_s - second[0].start_s == pytest.approx(2.4, abs=0.4)
 
 
+def test_vad_starts_afresh_after_a_long_pause_only():
+    vad = EnergyVad()
+    segmenter = Segmenter(vad)
+    audio = np.concatenate(
+        [speech(2.0), silence(0.6), speech(2.0, seed=1), silence(1.5), speech(1.0)]
+    )
+    step = int(0.1 * SAMPLE_RATE)
+    for i in range(0, len(audio), step):
+        segmenter.feed(audio[i : i + step])
+
+    assert vad.state_resets == 1  # after the 1.5 s silence, not the 0.6 s pause
+
+
+def test_a_phrase_keeps_a_lead_in_before_its_first_speech():
+    fake = FakeSpeech2Text()
+    phrases = stream(
+        make_whisper(fake).live("en"), np.concatenate([silence(2.0), speech(2.0), silence(1.0)])
+    )
+
+    lead_in = SegmenterConfig().pre_speech_s
+    assert phrases[0].start_s == pytest.approx(2.0 - lead_in, abs=0.05)
+
+
 def test_silence_is_not_transcribed():
     audio = np.concatenate([speech(5.0), silence(10.0), speech(5.0, seed=1)])
     fake = FakeSpeech2Text()
@@ -429,6 +460,20 @@ def test_silero_vad_scores_silence_as_non_speech():
     probabilities = detector.feed(np.zeros(SAMPLE_RATE, np.float32))
     assert len(probabilities) == SAMPLE_RATE // vad.FRAME_SAMPLES
     assert probabilities.max() < 0.2
+
+
+def test_silero_state_reset_keeps_frames_aligned():
+    pytest.importorskip("onnxruntime")
+    from hailo_apps.python.gen_ai_apps.gen_ai_utils.whisper import vad
+
+    if not vad.VAD_MODEL_PATH.is_file():
+        pytest.skip("Silero VAD model not installed (unit tests do not download it)")
+    detector = vad.SileroVad(vad.VAD_MODEL_PATH)
+    first = detector.feed(np.zeros(700, np.float32))  # one frame and a partial one
+    detector.reset_state()
+    second = detector.feed(np.zeros(3 * vad.FRAME_SAMPLES - 700, np.float32))
+
+    assert len(first) + len(second) == 3
 
 
 def test_vad_model_is_installed_with_the_whisper_resources(tmp_path, monkeypatch):

@@ -110,9 +110,18 @@ class SileroVad:
 
     def reset(self) -> None:
         """Start a new stream."""
+        self.reset_state()
+        self._pending = np.zeros(0, np.float32)
+
+    def reset_state(self) -> None:
+        """
+        Forget what the model has heard, keeping the partial frame so frames stay aligned.
+
+        After loud speech the recurrent state can leave the model deaf to much quieter speech
+        for several seconds; starting fresh after a pause avoids that.
+        """
         self._state = np.zeros(_STATE_SHAPE, np.float32)
         self._context = np.zeros(_CONTEXT_SAMPLES, np.float32)
-        self._pending = np.zeros(0, np.float32)
 
     def feed(self, audio: np.ndarray) -> np.ndarray:
         """

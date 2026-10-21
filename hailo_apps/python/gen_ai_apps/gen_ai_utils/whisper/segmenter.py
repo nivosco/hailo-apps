@@ -27,6 +27,8 @@ class SegmenterConfig:
         pre_speech_s: Audio kept before the first speech frame of a phrase.
         cut_search_s: A phrase that reaches the length limit without a pause is cut at the
             least speech-like frame within this span before the limit.
+        vad_reset_s: Silence after which the voice activity detector starts afresh, so that
+            loud speech does not mask quieter speech after it.
     """
 
     speech_threshold: float = 0.5
@@ -36,6 +38,7 @@ class SegmenterConfig:
     min_speech_s: float = 0.5
     pre_speech_s: float = 0.3
     cut_search_s: float = 2.0
+    vad_reset_s: float = 1.0
 
 
 @dataclass
@@ -108,6 +111,7 @@ class Segmenter:
         self._start = 0  # stream sample index of _audio[0]
         self._frames_seen = 0  # frames scored so far in the stream
         self._last_speech_frame: int | None = None
+        self._silent_run = 0  # consecutive frames below the silence threshold
         self._in_transmission = False
         self._new_transmission = True
         # Phrases dropped for holding too little speech; a caller transcribing one short clip
@@ -128,9 +132,13 @@ class Segmenter:
         self._audio = np.concatenate([self._audio, chunk])
         new = self.vad.feed(chunk)
         self._probabilities = np.concatenate([self._probabilities, new])
+        reset_frames = max(1, int(self.config.vad_reset_s / FRAME_SECONDS))
         for i, p in enumerate(new):
             if p >= self.config.speech_threshold:
                 self._last_speech_frame = self._frames_seen + i
+            self._silent_run = self._silent_run + 1 if p < self.config.silence_threshold else 0
+            if self._silent_run == reset_frames:
+                self.vad.reset_state()
         self._frames_seen += len(new)
         pieces = []
         while (piece := self._next_piece()) is not None:
