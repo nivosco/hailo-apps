@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from hailo_apps.config.config_manager import get_default_model_name, get_supported_architectures
+from hailo_apps.python.agent_server.pipelines import PIPELINE_TARGETS
 from hailo_apps.python.core.common.defines import (
     CLIP_PIPELINE,
     DEPTH_PIPELINE,
@@ -121,8 +122,9 @@ def list_apps(arch: str | None) -> list[dict[str, Any]]:
             every app is listed with the architectures it supports.
 
     Returns:
-        One dict per app with its name, kind, command, description, supported architectures
-        and, when ``arch`` is given, the default model for that architecture.
+        One dict per app with its name, kind, command, description, supported architectures,
+        whether ``start_pipeline`` can run it (``startable``) and, when ``arch`` is given, the
+        default model for that architecture.
     """
     apps: list[dict[str, Any]] = []
     for spec in APP_CATALOG:
@@ -135,6 +137,7 @@ def list_apps(arch: str | None) -> list[dict[str, Any]]:
             "command": spec.command,
             "description": spec.description,
             "supported_archs": supported,
+            "startable": spec.name in PIPELINE_TARGETS,
         }
         if arch is not None:
             entry["default_model"] = get_default_model_name(spec.name, arch)
