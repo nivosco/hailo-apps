@@ -1,13 +1,14 @@
 """Child-process entry point: runs one Hailo-Apps standalone vision app and prints detections.
 
 Usage: ``python -m hailo_apps.python.agent_server.pipeline_runner --app detection --input SRC
---arch ARCH [--fps N] [--frame-dir DIR]``.
+--arch ARCH --stop-file PATH [--parent-pid PID] [--fps N] [--frame-dir DIR]``.
 
 Each processed frame becomes one stdout line, ``DETECTIONS_MARKER`` followed by
 ``{"frame": N, "objects": [...]}`` with boxes normalised to the frame. With ``--frame-dir``, the
 newest frame and its detections are also saved there about once a second. The runner stops when
-it reads ``stop`` on stdin or stdin closes, so the server can stop it the same way on every
-platform; it then releases the camera and the device in order.
+the stop file appears or the parent process is gone, then releases the camera and the device in
+order. A file is used rather than a signal or stdin: Windows cannot send SIGINT to a child, and a
+thread blocked reading a stdin pipe there stalls the child's own start-up.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import argparse
 import json
 import os
 import sys
-import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -37,7 +37,7 @@ from hailo_apps.python.agent_server.pipelines import (
 INFER_TIMEOUT_MS = 10000
 # Pose models report a confidence per person; Hailo-Apps' pose app draws people above this.
 POSE_SCORE_THRESHOLD = 0.5
-STOP_COMMAND = "stop"
+PARENT_CHECK_INTERVAL_S = 1.0
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -146,11 +146,52 @@ def _make_postprocess(app: str, model_h: int, model_w: int) -> Any:
     return _Detector()
 
 
-def _watch_stdin(stop: threading.Event) -> None:
-    for line in sys.stdin:
-        if line.strip() == STOP_COMMAND:
-            break
-    stop.set()
+def _process_alive(pid: int) -> bool:
+    """Return whether a process exists, without signalling it."""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_condition(stop_file: Path, parent_pid: int | None) -> Callable[[], bool]:
+    """Build the check the capture loop runs once per frame.
+
+    Args:
+        stop_file: Its appearance asks the runner to stop.
+        parent_pid: Stop when this process is gone, so a crashed server does not leave the
+            device busy; not checked when None.
+
+    Returns:
+        A function returning True once the runner should stop.
+    """
+    last_parent_check = 0.0
+
+    def should_stop() -> bool:
+        nonlocal last_parent_check
+        if stop_file.exists():
+            return True
+        now = time.monotonic()
+        if parent_pid is not None and now - last_parent_check >= PARENT_CHECK_INTERVAL_S:
+            last_parent_check = now
+            return not _process_alive(parent_pid)
+        return False
+
+    return should_stop
 
 
 def _infer_once(hailo_infer: Any, model_input: np.ndarray) -> Any:
@@ -182,10 +223,10 @@ def run(
     arch: str,
     fps: float | None,
     frame_dir: Path | None,
-    stop: threading.Event,
+    should_stop: Callable[[], bool],
     emit: Callable[[str], None],
 ) -> None:
-    """Capture, infer and report until ``stop`` is set.
+    """Capture, infer and report until ``should_stop`` returns True.
 
     Args:
         app: Key of ``PIPELINE_TARGETS``.
@@ -193,7 +234,7 @@ def run(
         arch: Hailo architecture, used to pick the model.
         fps: Frame rate cap; defaults to the source's own rate. Video files are paced to it.
         frame_dir: Where to keep the newest frame for snapshots, or None.
-        stop: Set to finish the current frame and release everything.
+        should_stop: Polled once per frame; True finishes the frame and releases everything.
         emit: Receives one output line per frame.
     """
     from hailo_apps.python.core.common.core import resolve_hef_path
@@ -222,7 +263,7 @@ def run(
         post = _make_postprocess(app, model_h, model_w)
         period = 1.0 / (fps or ctx.source_fps or 30.0)
         frame_no, last_save, next_due = 0, 0.0, time.monotonic()
-        while not stop.is_set():
+        while not should_stop():
             ok, frame_bgr = ctx.cap.read()
             if not ok:
                 if ctx.is_video:
@@ -252,7 +293,7 @@ def run(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the requested app until stopped through stdin.
+    """Run the requested app until the stop file appears or the parent exits.
 
     Args:
         argv: Command-line arguments; defaults to ``sys.argv[1:]``.
@@ -263,17 +304,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--fps", type=float, default=None)
     parser.add_argument("--frame-dir", type=Path, default=None)
+    parser.add_argument("--stop-file", type=Path, required=True)
+    parser.add_argument("--parent-pid", type=int, default=None)
     args = parser.parse_args(argv)
-
-    stop = threading.Event()
-    threading.Thread(target=_watch_stdin, args=(stop,), daemon=True).start()
+    should_stop = stop_condition(args.stop_file, args.parent_pid)
 
     def emit(line: str) -> None:
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
 
     try:
-        run(args.app, args.input, args.arch, args.fps, args.frame_dir, stop, emit)
+        run(args.app, args.input, args.arch, args.fps, args.frame_dir, should_stop, emit)
     except KeyboardInterrupt:
         pass
 

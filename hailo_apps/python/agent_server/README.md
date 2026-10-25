@@ -204,6 +204,6 @@ Most of an agent turn is LLM time, and every tool call is one more LLM step, so 
 - `server.py` - MCP tools, bearer-token check and the `hailo-agent-server` command
 - `backend.py` - device identification, camera listing, pipelines and VLM per backend (Hailo / mock)
 - `pipelines.py` - pipeline lifecycle, input validation and detection history
-- `pipeline_runner.py` - child process that runs a standalone vision app and prints detections; stops on `stop` from stdin
+- `pipeline_runner.py` - child process that runs a standalone vision app and prints detections; stops when its stop file appears or the server exits
 - `imaging.py` - crop, annotate, resize and encode frames
 - `apps.py` - the app catalogue shown by `list_apps`

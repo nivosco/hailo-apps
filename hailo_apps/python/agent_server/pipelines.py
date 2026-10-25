@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,8 @@ DETECTIONS_MARKER = "@@hailo-dets "
 # detections, each replaced atomically.
 FRAME_IMAGE_NAME = "latest.jpg"
 FRAME_META_NAME = "latest.json"
+# Created in the same directory to ask the runner to stop.
+STOP_FILE_NAME = "stop"
 SNAPSHOT_INTERVAL_S = 1.0
 CAMERA_SOURCES = ("usb", "rpi")
 STREAM_PREFIXES = ("rtsp://", "rtsps://")
@@ -319,7 +322,7 @@ class SubprocessPipeline:
     source: str
     labels: tuple[str, ...]
     command: Sequence[str]
-    frame_dir: Path | None = None
+    frame_dir: Path
     pipeline_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     started_at: float = field(default_factory=time.monotonic)
     buffer: DetectionBuffer = field(default_factory=DetectionBuffer)
@@ -337,7 +340,7 @@ class SubprocessPipeline:
             list(self.command),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             bufsize=1,
         )
@@ -367,8 +370,6 @@ class SubprocessPipeline:
 
     def latest_frame(self) -> FrameImage | None:
         """Read the newest frame the runner wrote to ``frame_dir``."""
-        if self.frame_dir is None:
-            return None
         try:
             meta = json.loads((self.frame_dir / FRAME_META_NAME).read_text())
         except (OSError, ValueError):
@@ -384,27 +385,28 @@ class SubprocessPipeline:
         )
 
     def stop(self, timeout_s: float = STOP_TIMEOUT_S) -> dict[str, Any]:
-        """Ask the child to stop through stdin, escalating only if it does not exit in time.
+        """Ask the child to stop through the stop file, escalating only where that is safe.
+
+        On Windows a child that does not exit is left running and reported as stuck: killing a
+        process with DMA in flight can bugcheck the host there.
 
         Args:
-            timeout_s: How long to wait for a clean exit before escalating.
+            timeout_s: How long to wait for a clean exit.
 
         Returns:
-            ``stopped``, ``forced`` and the child's ``exit_code``.
+            ``stopped``, ``forced`` and the child's ``exit_code``; ``stuck`` when it was left
+            running.
         """
         if self._proc is None:
             return {"stopped": True, "forced": False, "exit_code": None}
         forced = False
         if self._proc.poll() is None:
-            try:
-                assert self._proc.stdin is not None
-                self._proc.stdin.write("stop\n")
-                self._proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass  # already exiting
+            (self.frame_dir / STOP_FILE_NAME).touch()
             try:
                 self._proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
+                if os.name == "nt":
+                    return {"stopped": False, "forced": False, "exit_code": None, "stuck": True}
                 forced = True
                 self._proc.terminate()
                 try:
@@ -414,14 +416,11 @@ class SubprocessPipeline:
                     self._proc.wait()
         if self._reader is not None:
             self._reader.join(timeout=2)
-        if self.frame_dir is not None:
-            shutil.rmtree(self.frame_dir, ignore_errors=True)
+        shutil.rmtree(self.frame_dir, ignore_errors=True)
         return {"stopped": True, "forced": forced, "exit_code": self._proc.returncode}
 
 
-def runner_command(
-    app: str, source: str, arch: str, fps: int | None, frame_dir: Path | None = None
-) -> list[str]:
+def runner_command(app: str, source: str, arch: str, fps: int | None, frame_dir: Path) -> list[str]:
     """Build the command that runs an app under ``pipeline_runner``.
 
     Args:
@@ -429,7 +428,7 @@ def runner_command(
         source: Resolved input.
         arch: Hailo architecture of the attached device.
         fps: Frame rate cap, or None for the source's own rate.
-        frame_dir: Where the runner keeps the newest frame; no frames are saved when None.
+        frame_dir: Where the runner keeps the newest frame and watches for the stop file.
 
     Returns:
         The argv for the child process.
@@ -444,11 +443,15 @@ def runner_command(
         source,
         "--arch",
         arch,
+        "--frame-dir",
+        str(frame_dir),
+        "--stop-file",
+        str(frame_dir / STOP_FILE_NAME),
+        "--parent-pid",
+        str(os.getpid()),
     ]
     if fps is not None:
         cmd += ["--fps", str(fps)]
-    if frame_dir is not None:
-        cmd += ["--frame-dir", str(frame_dir)]
     return cmd
 
 
@@ -633,8 +636,10 @@ class PipelineManager:
         """
         handle = self.get(pipeline_id)
         report = handle.stop()
-        with self._lock:
-            self._pipelines.pop(pipeline_id, None)
+        # A pipeline left running (stuck) stays registered, so nothing new starts on the device.
+        if report.get("stopped", True):
+            with self._lock:
+                self._pipelines.pop(pipeline_id, None)
         return {"pipeline_id": pipeline_id, **report}
 
     def stop_all(self) -> None:

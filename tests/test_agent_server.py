@@ -25,7 +25,7 @@ from hailo_apps.python.agent_server.backend import (
     arch_from_identify,
     parse_identify_output,
 )
-from hailo_apps.python.agent_server.pipelines import SubprocessPipeline
+from hailo_apps.python.agent_server.pipelines import MockPipeline, SubprocessPipeline
 from hailo_apps.python.agent_server.server import BearerTokenMiddleware, build_server
 
 IDENTIFY_H8 = """\
@@ -49,15 +49,13 @@ TOOLS = {
 }
 MUTATING_TOOLS = {"start_pipeline", "stop_pipeline", "watch_scene"}
 
-# Runner stand-ins: one prints detection lines until it reads "stop" on stdin, as
-# pipeline_runner does; the other ignores stdin, so stopping it has to escalate.
+# Runner stand-ins: one prints detection lines until its stop file (argv[1]) appears, as
+# pipeline_runner does; the other ignores it, so stopping it has to escalate.
 FAKE_RUNNER = textwrap.dedent(
     f"""
-    import json, sys, threading, time
-    stop = threading.Event()
-    threading.Thread(target=lambda: (sys.stdin.readline(), stop.set()), daemon=True).start()
+    import json, os, sys, time
     frame = 0
-    while not stop.is_set():
+    while not os.path.exists(sys.argv[1]):
         frame += 1
         print({pipelines.DETECTIONS_MARKER!r} + json.dumps({{"frame": frame, "objects": [
             {{"label": "person", "confidence": 0.9, "bbox": [0, 0, 1, 1]}}]}}), flush=True)
@@ -224,12 +222,14 @@ def test_describe_scene_requires_hailo10h() -> None:
 def test_subprocess_pipeline_stops_child(
     script: str, timeout_s: float, forced: bool, tmp_path: Path
 ) -> None:
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
     handle = SubprocessPipeline(
         app="detection",
         source="x",
         labels=(),
-        command=[sys.executable, "-u", "-c", script],
-        frame_dir=tmp_path / "frames",
+        command=[sys.executable, "-u", "-c", script, str(frame_dir / pipelines.STOP_FILE_NAME)],
+        frame_dir=frame_dir,
     ).start()
     _wait_for(lambda: handle.buffer.summary(5.0)["frames_in_window"] or handle._log)
 
@@ -237,6 +237,19 @@ def test_subprocess_pipeline_stops_child(
 
     assert report["forced"] is forced
     assert not handle.is_running()
+
+
+@pytest.mark.sanity
+def test_stuck_pipeline_stays_registered() -> None:
+    class StuckHandle(MockPipeline):
+        def stop(self, timeout_s: float = 0) -> dict[str, Any]:
+            return {"stopped": False, "forced": False, "exit_code": None, "stuck": True}
+
+    manager = pipelines.PipelineManager()
+    handle = manager.add(StuckHandle(app="detection", source="x", labels=()))
+
+    assert manager.stop(handle.pipeline_id)["stuck"] is True
+    assert manager.list() == [handle]
 
 
 @pytest.mark.sanity
