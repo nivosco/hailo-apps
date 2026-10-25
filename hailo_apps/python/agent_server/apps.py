@@ -122,9 +122,9 @@ def list_apps(arch: str | None) -> list[dict[str, Any]]:
             every app is listed with the architectures it supports.
 
     Returns:
-        One dict per app with its name, kind, command, description, supported architectures,
-        whether ``start_pipeline`` can run it (``startable``) and, when ``arch`` is given, the
-        default model for that architecture.
+        One dict per app with its name, kind, description and whether ``start_pipeline`` can run
+        it (``startable``), plus the default model for ``arch``, or the supported architectures
+        when ``arch`` is None. Launch commands are left out: the agent cannot run them.
     """
     apps: list[dict[str, Any]] = []
     for spec in APP_CATALOG:
@@ -134,12 +134,12 @@ def list_apps(arch: str | None) -> list[dict[str, Any]]:
         entry: dict[str, Any] = {
             "name": spec.name,
             "kind": spec.kind,
-            "command": spec.command,
             "description": spec.description,
-            "supported_archs": supported,
             "startable": spec.name in PIPELINE_TARGETS,
         }
-        if arch is not None:
+        if arch is None:
+            entry["supported_archs"] = supported
+        else:
             entry["default_model"] = get_default_model_name(spec.name, arch)
         apps.append(entry)
     return apps

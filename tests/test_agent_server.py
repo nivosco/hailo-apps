@@ -134,8 +134,8 @@ def test_list_apps_includes_genai_apps_on_hailo10h() -> None:
     by_name = {app["name"]: app for app in apps.list_apps("hailo10h")}
 
     assert GENAI_APPS <= set(by_name)
-    assert by_name["detection"]["command"] == "hailo-detect"
     assert by_name["detection"]["default_model"]
+    assert "command" not in by_name["detection"]
 
 
 def test_list_apps_without_device_lists_whole_catalog() -> None:
@@ -156,9 +156,10 @@ def test_server_marks_only_device_control_tools_as_mutating(h10_server: Any) -> 
         "get_detections",
         "snapshot",
         "describe_scene",
+        "watch_scene",
     }
     mutating = {name for name, tool in tools.items() if not tool.annotations.read_only_hint}
-    assert mutating == {"start_pipeline", "stop_pipeline"}
+    assert mutating == {"start_pipeline", "stop_pipeline", "watch_scene"}
 
 
 def test_hailo_status_tool_returns_device_snapshot(h10_server: Any) -> None:
@@ -650,3 +651,136 @@ def test_installed_vlm_hef_finds_installed_model(tmp_path: Any) -> None:
     hef.write_bytes(b"")
 
     assert backend_mod.installed_vlm_hef(models_root=tmp_path) == hef
+
+
+# --- cameras ---------------------------------------------------------------------------------
+
+RPICAM_LIST = """\
+Available cameras
+-----------------
+0 : ov5647 [2592x1944 10-bit GBRG] (/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36)
+    Modes: 'SGBRG10_CSI2P' : 640x480 [62.50 fps - (16, 0)/2560x1920 crop]
+                             1296x972 [46.34 fps - (0, 0)/2592x1944 crop]
+1 : imx708 [4608x2592 10-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a)
+"""
+
+
+def test_parse_rpi_camera_list_reads_sensor_names() -> None:
+    assert backend_mod.parse_rpi_camera_list(RPICAM_LIST) == ["ov5647", "imx708"]
+
+
+def test_parse_rpi_camera_list_handles_no_cameras() -> None:
+    assert backend_mod.parse_rpi_camera_list("No cameras available!") == []
+
+
+def test_list_rpi_cameras_is_empty_off_a_pi(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(backend_mod.subprocess, "run", _raise)
+
+    assert backend_mod.list_rpi_cameras() == []
+
+
+def test_hailo_status_reports_cameras(h10_server: Any) -> None:
+    status = _call_tool(h10_server, "hailo_status")
+
+    assert status["cameras"] == {"usb": [], "rpi": ["mock"]}
+
+
+def test_start_pipeline_rejects_unconnected_camera(h10_server: Any) -> None:
+    with pytest.raises(ToolError, match=r"no usb camera is connected.*\['rpi'\]"):
+        _call_tool(h10_server, "start_pipeline", app="detection", source="usb")
+
+
+def test_start_pipeline_accepts_connected_camera(h10_server: Any) -> None:
+    pid = _call_tool(h10_server, "start_pipeline", app="detection", source="rpi")["pipeline_id"]
+
+    _call_tool(h10_server, "stop_pipeline", pipeline_id=pid)
+
+
+# --- compact outputs / watch_scene -----------------------------------------------------------
+
+
+def test_compact_objects_keeps_most_confident_and_reports_total() -> None:
+    objects = [
+        {"label": "person", "confidence": c / 100, "bbox": [0.12345, 0.2, 0.3, 0.4]}
+        for c in range(30)
+    ]
+
+    out = pipelines.compact_objects(objects, limit=5)
+
+    assert [o["confidence"] for o in out["objects"]] == [0.29, 0.28, 0.27, 0.26, 0.25]
+    assert out["objects"][0]["bbox"][0] == 0.123
+    assert out["objects_total"] == 30
+
+
+def test_compact_objects_omits_total_when_nothing_dropped() -> None:
+    assert "objects_total" not in pipelines.compact_objects([_obj("car")])
+
+
+def test_describe_shows_video_name_and_omits_empty_fields() -> None:
+    handle = MockPipeline(app="detection", source="/x/videos/example.mp4", labels=())
+
+    out = pipelines.describe(handle)
+
+    assert out["source"] == "example.mp4"
+    assert "labels" not in out and "error" not in out
+
+
+def test_watch_scene_reports_counts_snapshot_and_stops(h10_server: Any) -> None:
+    result = anyio.run(h10_server.call_tool, "watch_scene", {"duration_s": 1, "labels": ["person"]})
+
+    meta = json.loads(_content(result, "text").text)
+    assert _content(result, "image").mime_type == "image/jpeg"
+    assert set(meta["counts"]) == {"person"}
+    assert meta["stopped"]["stopped"] is True
+    assert _call_tool(h10_server, "hailo_status")["pipelines"] == []
+
+
+def test_watch_scene_adds_vlm_caption_when_asked(h10_server: Any) -> None:
+    result = anyio.run(
+        h10_server.call_tool,
+        "watch_scene",
+        {"duration_s": 1, "snapshot": False, "describe": True, "prompt": "Who?"},
+    )
+
+    meta = json.loads(_content(result, "text").text)
+    assert not [c for c in result.content if c.type == "image"]
+    assert "Who?" in meta["vlm"]["caption"]
+
+
+def test_watch_scene_keep_running_leaves_pipeline_for_follow_up(h10_server: Any) -> None:
+    result = anyio.run(h10_server.call_tool, "watch_scene", {"duration_s": 1, "keep_running": True})
+    pid = json.loads(_content(result, "text").text)["pipeline_id"]
+
+    again = anyio.run(h10_server.call_tool, "watch_scene", {"duration_s": 1, "pipeline_id": pid})
+
+    assert json.loads(_content(again, "text").text)["running"] is True
+    _call_tool(h10_server, "stop_pipeline", pipeline_id=pid)
+
+
+def test_watch_scene_rejects_describe_off_hailo10h_before_starting() -> None:
+    server = build_server(MockBackend("hailo8"))
+
+    with pytest.raises(ToolError, match="Hailo-10H"):
+        anyio.run(server.call_tool, "watch_scene", {"describe": True})
+    assert _call_tool(server, "hailo_status")["pipelines"] == []
+
+
+def test_watch_scene_stops_pipeline_that_never_produces_frames(
+    h10_server: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MockPipeline, "_run", lambda self: None)
+
+    with pytest.raises(ToolError, match="no frames"):
+        anyio.run(h10_server.call_tool, "watch_scene", {"duration_s": 1})
+    assert _call_tool(h10_server, "hailo_status")["pipelines"] == []
+
+
+def test_watch_scene_defaults_to_short_observation(h10_server: Any) -> None:
+    started = time.monotonic()
+
+    anyio.run(h10_server.call_tool, "watch_scene", {"snapshot": False})
+
+    assert time.monotonic() - started < 3.0 + 2.0

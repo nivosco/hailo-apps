@@ -67,6 +67,9 @@ VIDEO_SUFFIXES = (".mp4", ".mkv", ".avi", ".mov")
 DEFAULT_SOURCE = "example.mp4"
 MAX_WINDOW_S = 120.0
 MAX_LABELS = 20
+# Tool results are re-read by the agent's LLM on every later step, so per-frame object lists
+# are capped and rounded; the counts still cover every object.
+MAX_REPORTED_OBJECTS = 15
 MIN_FPS, MAX_FPS = 1, 60
 # Generous on purpose: the app's own SIGINT shutdown drains the device, and killing a process
 # that still has DMA in flight can fault the host driver.
@@ -184,7 +187,7 @@ class DetectionBuffer:
             else {
                 "frame": latest.frame,
                 "age_s": round(now - latest.timestamp, 2),
-                "objects": [o for o in latest.objects if _keep(o)],
+                **compact_objects([o for o in latest.objects if _keep(o)]),
             },
             "counts": counts,
         }
@@ -224,6 +227,36 @@ class PipelineHandle(Protocol):
         ...
 
 
+def compact_objects(
+    objects: Sequence[dict[str, Any]], limit: int = MAX_REPORTED_OBJECTS
+) -> dict[str, Any]:
+    """Shrink a frame's object list for tool output.
+
+    Keeps the ``limit`` most confident objects, with confidence rounded to two decimals and the
+    bbox to three.
+
+    Args:
+        objects: Detections in the frame.
+        limit: Most objects to keep.
+
+    Returns:
+        ``objects`` and, when some were dropped, ``objects_total``.
+    """
+    ranked = sorted(objects, key=lambda o: o["confidence"], reverse=True)[:limit]
+    kept = [
+        {
+            **o,
+            "confidence": round(o["confidence"], 2),
+            "bbox": [round(v, 3) for v in o["bbox"]],
+        }
+        for o in ranked
+    ]
+    out: dict[str, Any] = {"objects": kept}
+    if len(objects) > limit:
+        out["objects_total"] = len(objects)
+    return out
+
+
 def describe(handle: PipelineHandle) -> dict[str, Any]:
     """Describe a pipeline for tool output.
 
@@ -231,17 +264,21 @@ def describe(handle: PipelineHandle) -> dict[str, Any]:
         handle: The pipeline.
 
     Returns:
-        Its id, app, source, label filter, uptime, running state and error.
+        Its id, app, source (a video's file name rather than its path), uptime and running
+        state, plus the label filter and error when there are any.
     """
-    return {
+    out: dict[str, Any] = {
         "pipeline_id": handle.pipeline_id,
         "app": handle.app,
-        "source": handle.source,
-        "labels": list(handle.labels),
+        "source": Path(handle.source).name if handle.source.startswith("/") else handle.source,
         "uptime_s": round(time.monotonic() - handle.started_at, 1),
         "running": handle.is_running(),
-        "error": handle.error(),
     }
+    if handle.labels:
+        out["labels"] = list(handle.labels)
+    if (error := handle.error()) is not None:
+        out["error"] = error
+    return out
 
 
 def resolve_source(source: str) -> str:

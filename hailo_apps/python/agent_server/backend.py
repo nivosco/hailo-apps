@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import tempfile
@@ -38,6 +39,9 @@ from hailo_apps.python.core.common.defines import (
 from hailo_apps.python.core.common.installation_utils import detect_host_arch
 
 IDENTIFY_TIMEOUT_S = 10.0
+CAMERA_LIST_TIMEOUT_S = 10.0
+# "0 : ov5647 [2592x1944 10-bit GBRG] (/base/axi/...)" in `rpicam-hello --list-cameras` output.
+_RPI_CAMERA_LINE = re.compile(r"^\s*(\d+)\s*:\s*(\S+)")
 # The first request also loads the VLM onto the device, which takes far longer than a caption.
 VLM_LOAD_TIMEOUT_S = 180
 VLM_TIMEOUT_S = 60
@@ -86,6 +90,14 @@ class DeviceBackend(Protocol):
 
         Returns:
             The device snapshot; never raises for a missing or broken device.
+        """
+        ...
+
+    def cameras(self) -> dict[str, list[str]]:
+        """List the cameras a pipeline could open.
+
+        Returns:
+            ``{"usb": [...], "rpi": [...]}``: USB capture devices and Raspberry Pi CSI cameras.
         """
         ...
 
@@ -161,6 +173,43 @@ def arch_from_identify(fields: dict[str, str]) -> str | None:
     if HAILO10H_ARCH_CAPS in device_arch or HAILO15H_ARCH_CAPS in device_arch:
         return HAILO10H_ARCH
     return None
+
+
+def parse_rpi_camera_list(stdout: str) -> list[str]:
+    """Extract camera sensor names from ``rpicam-hello --list-cameras`` output.
+
+    Args:
+        stdout: Command output.
+
+    Returns:
+        One sensor name per detected camera, e.g. ``["ov5647"]``.
+    """
+    return [m.group(2) for line in stdout.splitlines() if (m := _RPI_CAMERA_LINE.match(line))]
+
+
+def list_rpi_cameras(timeout_s: float = CAMERA_LIST_TIMEOUT_S) -> list[str]:
+    """List Raspberry Pi CSI cameras without opening them.
+
+    Uses ``rpicam-hello --list-cameras`` rather than Hailo-Apps' ``is_rpi_camera_available``,
+    which streams from the camera for seconds and would collide with a running pipeline.
+
+    Args:
+        timeout_s: Upper bound on the listing call.
+
+    Returns:
+        Sensor names; empty when the tool is missing (not a Pi) or the call fails.
+    """
+    try:
+        res = subprocess.run(
+            ["rpicam-hello", "--list-cameras"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    return parse_rpi_camera_list(res.stdout + res.stderr)
 
 
 def installed_vlm_hef(models_root: Path | None = None) -> Path:
@@ -245,6 +294,19 @@ class HailoCliBackend:
             product_name=fields.get("Product Name"),
             error=None if arch else "unrecognised device architecture",
         )
+
+    def cameras(self) -> dict[str, list[str]]:
+        """List connected USB and Raspberry Pi CSI cameras.
+
+        Returns:
+            ``{"usb": [...], "rpi": [...]}``.
+        """
+        from hailo_apps.python.core.common.camera_utils import get_usb_video_devices
+
+        return {
+            "usb": [str(dev) for dev in get_usb_video_devices()],
+            "rpi": list_rpi_cameras(),
+        }
 
     def start_pipeline(
         self, app: str, source: str, labels: tuple[str, ...], fps: int | None
@@ -342,6 +404,14 @@ class MockBackend:
             serial_number="MOCK0000",
             product_name=f"Mock {self._arch} device",
         )
+
+    def cameras(self) -> dict[str, list[str]]:
+        """Report one fake CSI camera so camera sources can be exercised.
+
+        Returns:
+            ``{"usb": [], "rpi": ["mock"]}``.
+        """
+        return {"usb": [], "rpi": ["mock"]}
 
     def start_pipeline(
         self, app: str, source: str, labels: tuple[str, ...], fps: int | None
