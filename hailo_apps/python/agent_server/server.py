@@ -17,7 +17,6 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from hailo_apps.config.config_manager import get_supported_architectures
 from hailo_apps.python.agent_server import apps, imaging, pipelines
 from hailo_apps.python.agent_server.backend import DeviceBackend, HailoCliBackend, MockBackend
 from hailo_apps.python.agent_server.pipelines import PipelineManager
@@ -75,7 +74,7 @@ def build_server(backend: DeviceBackend, manager: PipelineManager | None = None)
         arch = backend.device_info().arch
         if arch is None:
             raise ValueError("no Hailo device is attached; see hailo_status")
-        if arch not in get_supported_architectures(app):
+        if arch not in apps.supported_archs(app):
             raise ValueError(f"app {app!r} has no model for {arch}")
         resolved = pipelines.resolve_source(source)
         if source in pipelines.CAMERA_SOURCES:

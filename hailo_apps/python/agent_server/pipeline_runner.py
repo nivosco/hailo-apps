@@ -1,22 +1,30 @@
-"""Child-process entry point: runs one Hailo-Apps pipeline and prints its detections as JSON.
+"""Child-process entry point: runs one Hailo-Apps standalone vision app and prints detections.
 
-Usage: ``python -m hailo_apps.python.agent_server.pipeline_runner --app detection
-[--frame-dir DIR] -- <app args>``. Each frame becomes one stdout line, ``DETECTIONS_MARKER``
-followed by ``{"frame": N, "objects": [...]}``; everything else the app prints is ignored by the
-server. With ``--frame-dir``, the newest frame is also saved there about once a second.
+Usage: ``python -m hailo_apps.python.agent_server.pipeline_runner --app detection --input SRC
+--arch ARCH [--fps N] [--frame-dir DIR]``.
+
+Each processed frame becomes one stdout line, ``DETECTIONS_MARKER`` followed by
+``{"frame": N, "objects": [...]}`` with boxes normalised to the frame. With ``--frame-dir``, the
+newest frame and its detections are also saved there about once a second. The runner stops when
+it reads ``stop`` on stdin or stdin closes, so the server can stop it the same way on every
+platform; it then releases the camera and the device in order.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import os
 import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+import cv2
+import numpy as np
 
 from hailo_apps.python.agent_server.pipelines import (
     DETECTIONS_MARKER,
@@ -25,13 +33,11 @@ from hailo_apps.python.agent_server.pipelines import (
     PIPELINE_TARGETS,
     SNAPSHOT_INTERVAL_S,
 )
-from hailo_apps.python.core.common.defines import (
-    HAILO_NV12_VIDEO_FORMAT,
-    HAILO_RGB_VIDEO_FORMAT,
-    HAILO_YUYV_VIDEO_FORMAT,
-)
 
-HEADLESS_VIDEO_SINK = "fakesink"
+INFER_TIMEOUT_MS = 10000
+# Pose models report a confidence per person; Hailo-Apps' pose app draws people above this.
+POSE_SCORE_THRESHOLD = 0.5
+STOP_COMMAND = "stop"
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -40,114 +46,236 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _frame_to_bgr(buffer: Any, pad: Any) -> Any:
-    """Copy the buffer's pixels into a BGR array, or None for an unsupported format."""
-    import cv2
-    import numpy as np
+def _normalise(box: Sequence[float], width: int, height: int) -> list[float]:
+    xmin, ymin, xmax, ymax = box
+    return [
+        round(min(max(xmin / width, 0.0), 1.0), 4),
+        round(min(max(ymin / height, 0.0), 1.0), 4),
+        round(min(max(xmax / width, 0.0), 1.0), 4),
+        round(min(max(ymax / height, 0.0), 1.0), 4),
+    ]
 
-    from hailo_apps.python.core.common.buffer_utils import (
-        get_caps_from_pad,
-        get_numpy_from_buffer,
+
+class _Detector:
+    """Object detection with ByteTrack ids, on Hailo-Apps' standalone detection code."""
+
+    def __init__(self) -> None:
+        from hailo_apps.python.core.common.toolbox import get_labels, load_json_file
+        from hailo_apps.python.core.tracker.byte_tracker import BYTETracker
+        from hailo_apps.python.standalone_apps.object_detection import (
+            object_detection_post_process as post,
+        )
+
+        config_path = Path(post.__file__).with_name("config.json")
+        self._config = load_json_file(str(config_path))
+        self._labels = get_labels(None)
+        self._post = post
+        tracker_cfg = self._config.get("visualization_params", {}).get("tracker", {})
+        self._tracker = BYTETracker(SimpleNamespace(**tracker_cfg))
+
+    def objects(self, frame: np.ndarray, result: Any) -> list[dict[str, Any]]:
+        if isinstance(result, dict):
+            dets = self._post.decode_multioutput_detections(frame, result, self._config)
+        else:
+            dets = self._post.extract_detections(frame, result, self._config)
+        height, width = frame.shape[:2]
+        boxes = dets["detection_boxes"]
+        objects = [
+            {
+                "label": self._labels[int(cls)],
+                "confidence": round(float(score), 3),
+                "bbox": _normalise(box, width, height),
+            }
+            for box, cls, score in zip(
+                boxes, dets["detection_classes"], dets["detection_scores"], strict=True
+            )
+        ]
+        if boxes:
+            scores = dets["detection_scores"]
+            tracks = self._tracker.update(
+                np.array([[*box, score] for box, score in zip(boxes, scores, strict=True)])
+            )
+            for track in tracks:
+                idx = self._post.find_best_matching_detection_index(track.tlbr, boxes)
+                if idx is not None and idx >= 0:
+                    objects[idx]["track_id"] = int(track.track_id)
+        return objects
+
+
+class _PoseEstimator:
+    """Person boxes from Hailo-Apps' standalone pose-estimation post-processing."""
+
+    def __init__(self, model_h: int, model_w: int) -> None:
+        from hailo_apps.python.standalone_apps.pose_estimation.pose_estimation_utils import (
+            PoseEstPostProcessing,
+        )
+
+        # Same settings as Hailo-Apps' pose_estimation app.
+        self._post = PoseEstPostProcessing(
+            max_detections=300,
+            score_threshold=0.001,
+            nms_iou_thresh=0.7,
+            regression_length=15,
+            strides=[8, 16, 32],
+        )
+        self._model_h, self._model_w = model_h, model_w
+
+    def objects(self, frame: np.ndarray, result: Any) -> list[dict[str, Any]]:
+        out = self._post.post_process(result, self._model_h, self._model_w, 1)
+        height, width = frame.shape[:2]
+        objects = []
+        for box, score in zip(out["bboxes"][0], out["scores"][0], strict=True):
+            if float(score[0]) < POSE_SCORE_THRESHOLD:
+                continue
+            mapped = self._post.map_box_to_original_coords(
+                box, width, height, self._model_w, self._model_h
+            )
+            objects.append(
+                {
+                    "label": "person",
+                    "confidence": round(float(score[0]), 3),
+                    "bbox": _normalise(mapped, width, height),
+                }
+            )
+        return objects
+
+
+def _make_postprocess(app: str, model_h: int, model_w: int) -> Any:
+    if app == "pose_estimation":
+        return _PoseEstimator(model_h, model_w)
+    return _Detector()
+
+
+def _watch_stdin(stop: threading.Event) -> None:
+    for line in sys.stdin:
+        if line.strip() == STOP_COMMAND:
+            break
+    stop.set()
+
+
+def _infer_once(hailo_infer: Any, model_input: np.ndarray) -> Any:
+    """Run one synchronous inference and return the raw output (array or dict of arrays)."""
+    box: dict[str, Any] = {}
+
+    def _done(completion_info: Any, bindings_list: list) -> None:
+        if completion_info.exception:
+            box["error"] = completion_info.exception
+            return
+        bindings = bindings_list[0]
+        names = bindings._output_names
+        if len(names) == 1:
+            box["result"] = bindings.output().get_buffer()
+        else:
+            box["result"] = {
+                name: np.expand_dims(bindings.output(name).get_buffer(), axis=0) for name in names
+            }
+
+    hailo_infer.run([model_input], _done).wait(INFER_TIMEOUT_MS)
+    if "error" in box:
+        raise RuntimeError(f"inference failed: {box['error']}")
+    return box["result"]
+
+
+def run(
+    app: str,
+    source: str,
+    arch: str,
+    fps: float | None,
+    frame_dir: Path | None,
+    stop: threading.Event,
+    emit: Callable[[str], None],
+) -> None:
+    """Capture, infer and report until ``stop`` is set.
+
+    Args:
+        app: Key of ``PIPELINE_TARGETS``.
+        source: ``usb``, ``rpi``, a camera index, an ``rtsp://`` URL or a video path.
+        arch: Hailo architecture, used to pick the model.
+        fps: Frame rate cap; defaults to the source's own rate. Video files are paced to it.
+        frame_dir: Where to keep the newest frame for snapshots, or None.
+        stop: Set to finish the current frame and release everything.
+        emit: Receives one output line per frame.
+    """
+    from hailo_apps.python.core.common.core import resolve_hef_path
+    from hailo_apps.python.core.common.hailo_inference import HailoInfer
+    from hailo_apps.python.core.common.toolbox import (
+        InputContext,
+        default_preprocess,
+        init_input_source,
     )
 
-    fmt, width, height = get_caps_from_pad(pad)
-    if fmt is None:
-        return None
-    pixels = get_numpy_from_buffer(buffer, fmt, width, height)
-    if fmt == HAILO_RGB_VIDEO_FORMAT:
-        return cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
-    if fmt == HAILO_YUYV_VIDEO_FORMAT:
-        return cv2.cvtColor(pixels, cv2.COLOR_YUV2BGR_YUYV)
-    if fmt == HAILO_NV12_VIDEO_FORMAT:
-        y_plane, uv_plane = pixels
-        nv12 = np.concatenate([y_plane, uv_plane.reshape(height // 2, width)])
-        return cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
-    return None
+    hef_path = resolve_hef_path(None, PIPELINE_TARGETS[app], arch)
+    if hef_path is None:
+        raise RuntimeError(f"no model found for {app} on {arch}")
+    ctx = init_input_source(InputContext(input_src=source, batch_size=1, frame_rate=fps))
+    if ctx.cap is None:
+        raise RuntimeError(f"could not open input {source!r}")
+    from hailo_platform import HEF
 
-
-class _Snapshotter:
-    """Saves the newest frame and its detections to a directory at a bounded rate."""
-
-    def __init__(self, frame_dir: Path, interval_s: float = SNAPSHOT_INTERVAL_S) -> None:
-        self._dir = frame_dir
-        self._interval_s = interval_s
-        self._last = 0.0
-
-    def maybe_save(self, element: Any, buffer: Any, frame: int, objects: list[dict]) -> None:
-        now = time.monotonic()
-        if now - self._last < self._interval_s:
-            return
-        import cv2
-
-        image = _frame_to_bgr(buffer, element.get_static_pad("src"))
-        if image is None:
-            return
-        ok, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        if not ok:
-            return
-        self._last = now
-        _write_atomic(self._dir / FRAME_IMAGE_NAME, jpeg.tobytes())
-        meta = {"frame": frame, "objects": objects, "captured_at": time.time()}
-        _write_atomic(self._dir / FRAME_META_NAME, json.dumps(meta).encode())
-
-
-def _make_callback(snapshotter: _Snapshotter | None) -> Any:
-    def _detections_callback(element: Any, buffer: Any, user_data: Any) -> None:
-        import hailo
-
-        if buffer is None:
-            return
-        objects = []
-        for det in hailo.get_roi_from_buffer(buffer).get_objects_typed(hailo.HAILO_DETECTION):
-            bbox = det.get_bbox()
-            obj: dict[str, Any] = {
-                "label": det.get_label(),
-                "confidence": round(det.get_confidence(), 3),
-                "bbox": [
-                    round(bbox.xmin(), 4),
-                    round(bbox.ymin(), 4),
-                    round(bbox.xmin() + bbox.width(), 4),
-                    round(bbox.ymin() + bbox.height(), 4),
-                ],
-            }
-            track = det.get_objects_typed(hailo.HAILO_UNIQUE_ID)
-            if track:
-                obj["track_id"] = track[0].get_id()
-            objects.append(obj)
-        frame = user_data.get_count()
-        sys.stdout.write(f"{DETECTIONS_MARKER}{json.dumps({'frame': frame, 'objects': objects})}\n")
-        sys.stdout.flush()
-        if snapshotter is not None:
-            snapshotter.maybe_save(element, buffer, frame, objects)
-
-    return _detections_callback
+    # As in the standalone apps: raw multi-output models are read as float, HailoRT-NMS models
+    # keep the HEF's output type.
+    num_outputs = len(HEF(str(hef_path)).get_output_vstream_infos())
+    output_type = "FLOAT32" if num_outputs > 1 else None
+    hailo_infer = HailoInfer(str(hef_path), 1, output_type=output_type)
+    try:
+        model_h, model_w, _ = hailo_infer.get_input_shape()
+        post = _make_postprocess(app, model_h, model_w)
+        period = 1.0 / (fps or ctx.source_fps or 30.0)
+        frame_no, last_save, next_due = 0, 0.0, time.monotonic()
+        while not stop.is_set():
+            ok, frame_bgr = ctx.cap.read()
+            if not ok:
+                if ctx.is_video:
+                    ctx.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+                raise RuntimeError(f"input {source!r} stopped delivering frames")
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            result = _infer_once(hailo_infer, default_preprocess(frame_rgb, model_w, model_h))
+            frame_no += 1
+            objects = post.objects(frame_bgr, result)
+            emit(f"{DETECTIONS_MARKER}{json.dumps({'frame': frame_no, 'objects': objects})}")
+            now = time.monotonic()
+            if frame_dir is not None and now - last_save >= SNAPSHOT_INTERVAL_S:
+                ok, jpeg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                if ok:
+                    _write_atomic(frame_dir / FRAME_IMAGE_NAME, jpeg.tobytes())
+                    meta = {"frame": frame_no, "objects": objects, "captured_at": time.time()}
+                    _write_atomic(frame_dir / FRAME_META_NAME, json.dumps(meta).encode())
+                    last_save = now
+            # Cameras and streams pace themselves; video files would otherwise race ahead.
+            if ctx.is_video:
+                next_due += period
+                time.sleep(max(0.0, next_due - time.monotonic()))
+    finally:
+        ctx.cap.release()
+        hailo_infer.close()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the requested pipeline until it is interrupted.
+    """Run the requested app until stopped through stdin.
 
     Args:
-        argv: ``--app <name> [--frame-dir DIR] -- <app args>``; defaults to ``sys.argv[1:]``.
+        argv: Command-line arguments; defaults to ``sys.argv[1:]``.
     """
     parser = argparse.ArgumentParser(prog="hailo-agent-pipeline-runner")
     parser.add_argument("--app", required=True, choices=sorted(PIPELINE_TARGETS))
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--arch", required=True)
+    parser.add_argument("--fps", type=float, default=None)
     parser.add_argument("--frame-dir", type=Path, default=None)
-    parser.add_argument("app_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    app_args = args.app_args[1:] if args.app_args[:1] == ["--"] else args.app_args
 
-    from hailo_apps.python.core.gstreamer import gstreamer_app
+    stop = threading.Event()
+    threading.Thread(target=_watch_stdin, args=(stop,), daemon=True).start()
 
-    # The pipeline CLI has no headless option; every app reads its sink from this module constant
-    # when it is constructed, so swapping it here keeps the device free of a display window.
-    gstreamer_app.GST_VIDEO_SINK = HEADLESS_VIDEO_SINK
+    def emit(line: str) -> None:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
-    module_name, class_name = PIPELINE_TARGETS[args.app]
-    app_class = getattr(importlib.import_module(module_name), class_name)
-    snapshotter = _Snapshotter(args.frame_dir) if args.frame_dir is not None else None
-    # The app classes parse their options from sys.argv.
-    sys.argv = [f"hailo-agent-{args.app}", *app_args]
-    app_class(_make_callback(snapshotter), gstreamer_app.app_callback_class()).run()
+    try:
+        run(args.app, args.input, args.arch, args.fps, args.frame_dir, stop, emit)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

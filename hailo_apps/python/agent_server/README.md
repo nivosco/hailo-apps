@@ -29,27 +29,31 @@ JPEG snapshots and short VLM captions, never a video stream.
 | `hailo_status` | Accelerator, firmware, host type, connected cameras (`usb` / `rpi`), running pipelines |
 | `list_apps` | Vision pipelines and GenAI apps the accelerator can run, with default models |
 | `watch_scene` | One call: start a pipeline, observe for N seconds, return counts + optional snapshot and VLM caption, stop |
-| `start_pipeline` / `stop_pipeline` | Start and stop a detection-family pipeline (detection, simple_detection, pose_estimation, instance_segmentation, tiling) for longer monitoring |
+| `start_pipeline` / `stop_pipeline` | Start and stop a vision app (`detection` with track ids, or `pose_estimation`) for longer monitoring |
 | `get_detections` | Per-label counts over a time window and the latest frame's main objects |
 | `snapshot` | The newest frame as a JPEG (at most 1280 px), optionally annotated or cropped to a box |
 | `describe_scene` | A caption of the newest frame, or a crop, from the on-device VLM (Hailo-10H only) |
 
 Only one pipeline runs at a time. Inputs are limited to cameras (`usb`, `rpi`), `rtsp://` streams and
-videos in the Hailo-Apps resources directory, never arbitrary file paths.
+videos in the Hailo-Apps resources directory, never arbitrary file paths. Video files loop.
+
+Pipelines are the Hailo-Apps **standalone** detection and pose apps (HailoRT + OpenCV, no
+GStreamer), run in a child process so a stuck device cannot block the server. On a Raspberry Pi 5
+they process 30 fps video at about a quarter of the CPU.
 
 ## Requirements
 
 ### Edge device
 
-- A supported Hailo-Apps host running **Linux** (Raspberry Pi 5 with AI HAT+ / AI HAT+ 2, or x86_64)
-  with a Hailo-8, Hailo-8L or Hailo-10H, set up for **GStreamer pipeline apps** as in the
-  [Prerequisites](../../../doc/user_guide/prerequisites.md) guide
+- A Hailo-8, Hailo-8L or Hailo-10H on a Hailo-Apps host: Raspberry Pi 5 (AI HAT+ / AI HAT+ 2),
+  Linux x86_64 or Windows, with HailoRT and PyHailoRT installed as in the
+  [Prerequisites](../../../doc/user_guide/prerequisites.md) guide (TAPPAS is not needed)
 - Python >=3.10
-- A camera, or the bundled example videos
+- A camera (USB/UVC webcam, laptop webcam or Raspberry Pi camera), or the bundled example videos
 - For `describe_scene`: a Hailo-10H and **about 3.5 GB of free disk** for the VLM model
 
-> Windows is not supported as an edge device yet: Hailo-Apps GStreamer pipelines do not run on
-> Windows. Use the mock backend there for agent-side development.
+> Windows: the server uses only standalone apps, so it is expected to work there, with the laptop
+> webcam as `usb`; it has not been validated on Windows hardware yet.
 
 ### Agent host
 
@@ -68,21 +72,24 @@ input if the agent should look at snapshots itself.
 
 ### Edge device
 
-Install Hailo-Apps as described in the [Installation Guide](../../../doc/user_guide/installation.md),
-then add the agent-server extra and prepare the resources:
+Create a virtual environment with PyHailoRT, as for the standalone apps in the
+[Installation Guide](../../../doc/user_guide/installation.md), then install the agent-server extra
+and download the resources:
 
 ```bash
+# Raspberry Pi: python3 -m venv --system-site-packages .venv  (to see the system HailoRT)
+# Windows:      py -m venv .venv; pip install "C:\Program Files\HailoRT\python\hailort-*.whl"
 # From the repository root directory
 pip install -e ".[agent-server]"
 
-hailo-set-env                               # writes resources/.env (required by the pipelines)
-hailo-compile-postprocess                   # builds the post-process libraries pipelines load
-hailo-download-resources --group detection  # detection model and example videos
-hailo-download-resources --group vlm_chat   # Hailo-10H only: VLM for describe_scene (3.3 GB)
+hailo-download-resources --group object_detection  # detection model and example videos
+hailo-download-resources --group pose_estimation   # optional: pose model
+hailo-download-resources --group vlm_chat          # Hailo-10H only: VLM for describe_scene (3.3 GB)
 ```
 
-Download any other pipeline you want the agent to use the same way (`--group pose_estimation`, ...).
-The server never downloads models itself: a missing model is reported as an error.
+Resources live in `/usr/local/hailo/resources` (on Windows, the same path on the current drive).
+A missing vision model is downloaded on the first `start_pipeline`; the VLM never is, because of
+its size: `describe_scene` reports it as missing instead.
 
 ### Agent host
 
@@ -186,8 +193,7 @@ Most of an agent turn is LLM time, and every tool call is one more LLM step, so 
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| Pipelines run but report no detections | `/usr/local/hailo/resources/.env` is missing; run `hailo-set-env` |
-| `No USB camera found for '--input usb'` | Check `cameras` in `hailo_status`; a Raspberry Pi ribbon camera is `rpi`, not `usb` |
+| `no usb camera is connected` | Check `cameras` in `hailo_status`; a Raspberry Pi ribbon camera is `rpi`, not `usb` |
 | The agent describes snapshots wrongly or says it got base64 | Set `input: ["text", "image"]` on the model and `tools.toolSearch: false` |
 | `describe_scene`: VLM model not installed | Install the `vlm_chat` model; the server does not download it |
 | OpenClaw: `failed to start server "hailo"` | The server or the network path to it is down; check `openclaw mcp probe hailo` |
@@ -198,6 +204,6 @@ Most of an agent turn is LLM time, and every tool call is one more LLM step, so 
 - `server.py` - MCP tools, bearer-token check and the `hailo-agent-server` command
 - `backend.py` - device identification, camera listing, pipelines and VLM per backend (Hailo / mock)
 - `pipelines.py` - pipeline lifecycle, input validation and detection history
-- `pipeline_runner.py` - child process that runs a Hailo-Apps pipeline headless and prints detections
+- `pipeline_runner.py` - child process that runs a standalone vision app and prints detections; stops on `stop` from stdin
 - `imaging.py` - crop, annotate, resize and encode frames
 - `apps.py` - the app catalogue shown by `list_apps`

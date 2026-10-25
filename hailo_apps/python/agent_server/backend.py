@@ -302,10 +302,11 @@ class HailoCliBackend:
         """
         from hailo_apps.python.core.common.camera_utils import get_usb_video_devices
 
-        return {
-            "usb": [str(dev) for dev in get_usb_video_devices()],
-            "rpi": list_rpi_cameras(),
-        }
+        try:
+            usb = [str(dev) for dev in get_usb_video_devices()]
+        except ImportError:  # Windows enumeration needs the optional pygrabber package
+            usb = []
+        return {"usb": usb, "rpi": list_rpi_cameras()}
 
     def start_pipeline(
         self, app: str, source: str, labels: tuple[str, ...], fps: int | None
@@ -326,12 +327,15 @@ class HailoCliBackend:
         """
         if Path(source).is_absolute() and not Path(source).is_file():
             raise ValueError(f"video not found: {source} (run hailo-download-resources)")
+        arch = self.device_info().arch
+        if arch is None:
+            raise ValueError("no Hailo device is attached; see hailo_status")
         frame_dir = Path(tempfile.mkdtemp(prefix=f"hailo-agent-{app}-"))
         return SubprocessPipeline(
             app=app,
             source=source,
             labels=labels,
-            command=runner_command(app, source, fps, frame_dir),
+            command=runner_command(app, source, arch, fps, frame_dir),
             frame_dir=frame_dir,
         ).start()
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -23,36 +22,16 @@ import numpy as np
 from hailo_apps.python.agent_server import imaging
 from hailo_apps.python.core.common.defines import (
     DETECTION_PIPELINE,
-    INSTANCE_SEGMENTATION_PIPELINE,
     POSE_ESTIMATION_PIPELINE,
     RESOURCES_ROOT_PATH_DEFAULT,
     RESOURCES_VIDEOS_DIR_NAME,
-    SIMPLE_DETECTION_PIPELINE,
-    TILING_PIPELINE,
 )
 
-# Apps whose callback yields HAILO_DETECTION objects, mapped to (module, app class).
-PIPELINE_TARGETS: dict[str, tuple[str, str]] = {
-    DETECTION_PIPELINE: (
-        "hailo_apps.python.pipeline_apps.detection.detection_pipeline",
-        "GStreamerDetectionApp",
-    ),
-    SIMPLE_DETECTION_PIPELINE: (
-        "hailo_apps.python.pipeline_apps.detection_simple.detection_simple_pipeline",
-        "GStreamerDetectionSimpleApp",
-    ),
-    POSE_ESTIMATION_PIPELINE: (
-        "hailo_apps.python.pipeline_apps.pose_estimation.pose_estimation_pipeline",
-        "GStreamerPoseEstimationApp",
-    ),
-    INSTANCE_SEGMENTATION_PIPELINE: (
-        "hailo_apps.python.pipeline_apps.instance_segmentation.instance_segmentation_pipeline",
-        "GStreamerInstanceSegmentationApp",
-    ),
-    TILING_PIPELINE: (
-        "hailo_apps.python.pipeline_apps.tiling.tiling_pipeline",
-        "GStreamerTilingApp",
-    ),
+# Apps the runner can start, mapped to the standalone app whose model and post-processing it
+# uses (its resources_config key). Standalone apps run on Linux and Windows alike.
+PIPELINE_TARGETS: dict[str, str] = {
+    DETECTION_PIPELINE: "object_detection",
+    POSE_ESTIMATION_PIPELINE: "pose_estimation",
 }
 
 DETECTIONS_MARKER = "@@hailo-dets "
@@ -71,8 +50,8 @@ MAX_LABELS = 20
 # are capped and rounded; the counts still cover every object.
 MAX_REPORTED_OBJECTS = 15
 MIN_FPS, MAX_FPS = 1, 60
-# Generous on purpose: the app's own SIGINT shutdown drains the device, and killing a process
-# that still has DMA in flight can fault the host driver.
+# Generous on purpose: on "stop" the runner finishes its frame and releases the device, and
+# killing a process that still has DMA in flight can fault the host driver.
 STOP_TIMEOUT_S = 20.0
 
 
@@ -334,7 +313,7 @@ def parse_detections_line(line: str, timestamp: float) -> FrameDetections | None
 
 @dataclass
 class SubprocessPipeline:
-    """A Hailo-Apps pipeline running in a child process via ``pipeline_runner``."""
+    """A Hailo-Apps vision app running in a child process via ``pipeline_runner``."""
 
     app: str
     source: str
@@ -358,7 +337,7 @@ class SubprocessPipeline:
             list(self.command),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -405,10 +384,10 @@ class SubprocessPipeline:
         )
 
     def stop(self, timeout_s: float = STOP_TIMEOUT_S) -> dict[str, Any]:
-        """Stop the child with SIGINT, escalating only if it does not exit in time.
+        """Ask the child to stop through stdin, escalating only if it does not exit in time.
 
         Args:
-            timeout_s: How long to wait after SIGINT before escalating.
+            timeout_s: How long to wait for a clean exit before escalating.
 
         Returns:
             ``stopped``, ``forced`` and the child's ``exit_code``.
@@ -417,7 +396,12 @@ class SubprocessPipeline:
             return {"stopped": True, "forced": False, "exit_code": None}
         forced = False
         if self._proc.poll() is None:
-            self._proc.send_signal(signal.SIGINT)
+            try:
+                assert self._proc.stdin is not None
+                self._proc.stdin.write("stop\n")
+                self._proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass  # already exiting
             try:
                 self._proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
@@ -436,14 +420,15 @@ class SubprocessPipeline:
 
 
 def runner_command(
-    app: str, source: str, fps: int | None, frame_dir: Path | None = None
+    app: str, source: str, arch: str, fps: int | None, frame_dir: Path | None = None
 ) -> list[str]:
     """Build the command that runs an app under ``pipeline_runner``.
 
     Args:
         app: Key of :data:`PIPELINE_TARGETS`.
-        source: Resolved ``--input`` value.
-        fps: Frame rate to request, or None for the app default.
+        source: Resolved input.
+        arch: Hailo architecture of the attached device.
+        fps: Frame rate cap, or None for the source's own rate.
         frame_dir: Where the runner keeps the newest frame; no frames are saved when None.
 
     Returns:
@@ -455,13 +440,15 @@ def runner_command(
         "hailo_apps.python.agent_server.pipeline_runner",
         "--app",
         app,
-        *(["--frame-dir", str(frame_dir)] if frame_dir is not None else []),
-        "--",
         "--input",
         source,
+        "--arch",
+        arch,
     ]
     if fps is not None:
-        cmd += ["--frame-rate", str(fps)]
+        cmd += ["--fps", str(fps)]
+    if frame_dir is not None:
+        cmd += ["--frame-dir", str(frame_dir)]
     return cmd
 
 

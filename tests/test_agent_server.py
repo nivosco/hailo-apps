@@ -49,25 +49,22 @@ TOOLS = {
 }
 MUTATING_TOOLS = {"start_pipeline", "stop_pipeline", "watch_scene"}
 
-# A runner stand-in: prints detection lines until SIGINT, then exits cleanly.
+# Runner stand-ins: one prints detection lines until it reads "stop" on stdin, as
+# pipeline_runner does; the other ignores stdin, so stopping it has to escalate.
 FAKE_RUNNER = textwrap.dedent(
     f"""
-    import json, sys, time
+    import json, sys, threading, time
+    stop = threading.Event()
+    threading.Thread(target=lambda: (sys.stdin.readline(), stop.set()), daemon=True).start()
     frame = 0
-    try:
-        while True:
-            frame += 1
-            print({pipelines.DETECTIONS_MARKER!r} + json.dumps({{"frame": frame, "objects": [
-                {{"label": "person", "confidence": 0.9, "bbox": [0, 0, 1, 1]}}]}}), flush=True)
-            time.sleep(0.02)
-    except KeyboardInterrupt:
-        sys.exit(0)
+    while not stop.is_set():
+        frame += 1
+        print({pipelines.DETECTIONS_MARKER!r} + json.dumps({{"frame": frame, "objects": [
+            {{"label": "person", "confidence": 0.9, "bbox": [0, 0, 1, 1]}}]}}), flush=True)
+        time.sleep(0.02)
     """
 )
-STUBBORN_RUNNER = (
-    "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\n"
-    "print('ready', flush=True)\ntime.sleep(60)\n"
-)
+STUBBORN_RUNNER = "import time\nprint('ready', flush=True)\ntime.sleep(60)\n"
 
 
 def _call(server: Any, tool: str, **arguments: Any) -> Any:
@@ -222,7 +219,7 @@ def test_describe_scene_requires_hailo10h() -> None:
 @pytest.mark.parametrize(
     ("script", "timeout_s", "forced"),
     [(FAKE_RUNNER, 5.0, False), (STUBBORN_RUNNER, 0.5, True)],
-    ids=["graceful-sigint", "escalates"],
+    ids=["graceful-stop", "escalates"],
 )
 def test_subprocess_pipeline_stops_child(
     script: str, timeout_s: float, forced: bool, tmp_path: Path
@@ -254,7 +251,7 @@ def test_vlm_model_is_never_auto_downloaded(tmp_path: Path) -> None:
 @pytest.mark.requires_device
 @pytest.mark.pipeline
 def test_watch_scene_on_device() -> None:
-    pytest.importorskip("gi")
+    pytest.importorskip("hailo_platform")
     if HailoCliBackend().device_info().arch is None:
         pytest.skip("no Hailo device attached")
     video = Path(pipelines.resolve_source(pipelines.DEFAULT_SOURCE))
