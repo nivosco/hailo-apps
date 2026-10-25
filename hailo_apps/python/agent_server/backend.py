@@ -29,7 +29,6 @@ from hailo_apps.python.core.common.defines import (
     HAILO8L_ARCH_CAPS,
     HAILO10H_ARCH,
     HAILO10H_ARCH_CAPS,
-    HAILO15H_ARCH_CAPS,
     HAILO_FILE_EXTENSION,
     HAILO_FW_CONTROL_CMD,
     RESOURCES_MODELS_DIR_NAME,
@@ -170,7 +169,7 @@ def arch_from_identify(fields: dict[str, str]) -> str | None:
         return HAILO8L_ARCH
     if HAILO8_ARCH_CAPS in device_arch:
         return HAILO8_ARCH
-    if HAILO10H_ARCH_CAPS in device_arch or HAILO15H_ARCH_CAPS in device_arch:
+    if HAILO10H_ARCH_CAPS in device_arch:
         return HAILO10H_ARCH
     return None
 
