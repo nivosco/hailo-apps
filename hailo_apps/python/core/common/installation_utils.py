@@ -11,6 +11,7 @@ Function Organization:
     - post_install Utilities: Functions used by post_install.py
 """
 
+import importlib.metadata
 import platform
 import shlex
 import subprocess
@@ -25,8 +26,8 @@ from .defines import (
     HAILO10H_ARCH,
     HAILO10H_ARCH_CAPS,
     HAILO15H_ARCH_CAPS,
-    HAILO_FW_CONTROL_CMD,
     HAILO_APPS_CORE,
+    HAILO_FW_CONTROL_CMD,
     HAILO_TAPPAS_CORE,
     HAILO_TAPPAS_CORE_PYTHON_NAMES,
     HAILORT_PACKAGE_NAME,
@@ -113,13 +114,15 @@ def _run_command_with_output(cmd: list[str]) -> str:
 #          reid_multisource_pipeline.py, core.py, conftest.py, test_runner.py
 # =============================================================================
 
+
 def is_raspberry_pi():
     try:
-        with open('/proc/device-tree/model', 'r') as f:
+        with open("/proc/device-tree/model") as f:
             model = f.read()
-            return  RPI_POSSIBLE_NAME in model
+            return RPI_POSSIBLE_NAME in model
     except:
         return False
+
 
 def detect_host_arch() -> str:
     """Detect the host system architecture.
@@ -192,7 +195,8 @@ def detect_system_pkg_version(pkg_name: str) -> str:
         version = version.strip()
         hailo_logger.debug(f"Found version {version} for system package {pkg_name}")
         return version
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # FileNotFoundError: no dpkg on this system (Windows, non-Debian Linux).
         hailo_logger.warning(f"System package {pkg_name} is not installed.")
         return ""
 
@@ -211,7 +215,8 @@ def detect_pkg_installed(pkg_name: str) -> bool:
         subprocess.check_output(["dpkg", "-s", pkg_name])
         hailo_logger.debug(f"Package {pkg_name} is installed.")
         return True
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # FileNotFoundError: no dpkg on this system (Windows, non-Debian Linux).
         hailo_logger.debug(f"Package {pkg_name} is not installed.")
         return False
 
@@ -251,7 +256,7 @@ def auto_detect_hailort_python_bindings() -> bool:
     """
     hailo_logger.debug("Detecting HailoRT Python bindings.")
     # pkg_name = get_hailort_package_name()
-    pkg_name = 'hailort'  # while hailort debian has different name for 10H, the Python wheel name remains the same for 8 & 10
+    pkg_name = "hailort"  # while hailort debian has different name for 10H, the Python wheel name remains the same for 8 & 10
     if _detect_pip_package_installed(pkg_name):
         hailo_logger.info("Detected HailoRT Python bindings installed.")
         return True
@@ -269,7 +274,12 @@ def auto_detect_hailort_version() -> str:
     pkg_name = get_hailort_package_name()
     if detect_pkg_installed(pkg_name):
         return detect_system_pkg_version(pkg_name)
-    else:
+    # No system package (e.g. Windows): the PyHailoRT wheel carries the runtime version.
+    try:
+        version = importlib.metadata.version("hailort")
+        hailo_logger.debug(f"Using HailoRT version {version} from the hailort Python package.")
+        return version
+    except importlib.metadata.PackageNotFoundError:
         hailo_logger.warning("Could not detect HailoRT version, please install HailoRT.")
         return None
 
@@ -351,5 +361,3 @@ def auto_detect_tappas_postproc_dir() -> str:
             continue
     hailo_logger.error("Could not detect TAPPAS postproc directory")
     return ""
-
-
