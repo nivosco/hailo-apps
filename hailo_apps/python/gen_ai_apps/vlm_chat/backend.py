@@ -237,14 +237,24 @@ class Backend:
 
         return cropped.astype(np.uint8)
 
-    def close(self) -> None:
-        """Close the backend process."""
+    def close(self, timeout: float = 2.0, force: bool = True) -> bool:
+        """Close the backend process.
+
+        Args:
+            timeout (float, optional): Seconds to wait for the worker to release the device.
+            force (bool, optional): Terminate the worker if it is still running after
+                `timeout`. Pass False where killing a process mid-release is unsafe.
+
+        Returns:
+            bool: True if the worker process has exited.
+        """
         try:
             logger.info("Closing VLM backend...")
             self._request_queue.put(None)
-            self._process.join(timeout=2)
-            if self._process.is_alive():
+            self._process.join(timeout=timeout)
+            if self._process.is_alive() and force:
                 self._process.terminate()
             logger.info("VLM backend closed.")
         except Exception as e:
             logger.error(f"Error closing backend: {e}")
+        return not self._process.is_alive()
